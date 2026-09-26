@@ -1,0 +1,31 @@
+# 行尾与编码策略。
+# 注意 .gitattributes 是**后面匹配的行胜出**，所以先写通配、再写例外。
+#
+# 重点：*.cmd / *.vbs 绝对不能被 git 动行尾。它们必须是 GBK + CRLF 才能在中文 Windows 上正确解析，
+# 一旦被转成 LF，GBK 会把行尾的 0x0A 当成双字节汉字的尾字符吃掉，下一条命令被粘进上一行注释里，
+# cmd 报"不是内部或外部命令"。改完这些文件请验一下文件里 CR 数 == LF 数。详见 CONTRIBUTING.md 第 1 条。
+
+* text=auto eol=lf
+
+*.cmd  -text
+*.vbs  -text
+*.bat  -text
+
+# Windows 上的 PowerShell 5.1 读带 BOM/换行怪异的文件会闹脾气，给它 CRLF
+*.ps1  text eol=crlf
+
+*.cs    text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+
+# 二进制
+*.exe  binary
+*.dll  binary
+*.png  binary
+*.jpg  binary
+*.zip  binary
+
+# vendored 第三方文件：保留行尾策略，但别在 diff 里刷屏
+www/vendor/*.js text eol=lf -diff

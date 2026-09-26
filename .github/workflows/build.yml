@@ -1,0 +1,62 @@
+name: build
+
+# 说明：这个 workflow 是在 Windows 机器上写完、**没有在 GitHub Actions 上实际跑过**的
+# （作者本地没有 gh / 也没有远端仓库）。它做的事和 build.ps1 完全一致，
+# 第一次推上去如果红了，改的应该是这里而不是构建脚本。
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 编译（用系统自带的 csc.exe，零安装）
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: 冒烟测试：起服务、问健康、停服务
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Start-Process -FilePath .\bedremote.exe -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          try {
+            $h = (Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 5).Content
+            if ($h -ne 'ok') { throw "health 返回：$h" }
+            $a = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/addr' -UseBasicParsing -TimeoutSec 5
+            if ($a.StatusCode -ne 200) { throw '/addr 没通' }
+            $pa = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/pair' -UseBasicParsing -TimeoutSec 5
+            if ($pa.Content -notmatch 'qrcode.js') { throw '配对页没引到二维码库' }
+            $vd = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/vendor/qrcode.js' -UseBasicParsing -TimeoutSec 5
+            if ($vd.StatusCode -ne 200) { throw '静态口没通' }
+            Write-Host '冒烟通过：/health /addr /pair /vendor'
+          } finally {
+            Stop-Process -Name bedremote -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: 检查批处理文件仍然是 CRLF（被转成 LF 会静默咬人，见 CONTRIBUTING 第 1 条）
+        shell: pwsh
+        run: |
+          $bad = @()
+          Get-ChildItem -File -Path . -Filter *.cmd | ForEach-Object {
+            $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+            $cr = @($bytes | Where-Object { $_ -eq 13 }).Count
+            $lf = @($bytes | Where-Object { $_ -eq 10 }).Count
+            Write-Host ("{0}: CR={1} LF={2}" -f $_.Name, $cr, $lf)
+            if ($cr -eq 0 -or $cr -ne $lf) { $bad += "$($_.Name): CR=$cr LF=$lf（要求相等且不为 0）" }
+          }
+          Get-ChildItem -File -Path . -Filter *.vbs | ForEach-Object {
+            $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+            $cr = @($bytes | Where-Object { $_ -eq 13 }).Count
+            $lf = @($bytes | Where-Object { $_ -eq 10 }).Count
+            Write-Host ("{0}: CR={1} LF={2}" -f $_.Name, $cr, $lf)
+            if ($cr -eq 0 -or $cr -ne $lf) { $bad += "$($_.Name): CR=$cr LF=$lf（要求相等且不为 0）" }
+          }
+          if ($bad.Count) { $bad | ForEach-Object { Write-Host "坏: $_" }; exit 1 }
+          Write-Host '行尾检查通过：所有 .cmd/.vbs 都是完整 CRLF'

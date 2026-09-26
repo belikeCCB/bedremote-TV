@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>bedremote 面板编辑器</title>
+<style>
+:root{--bg:#14151a;--p:#1c1d24;--k:#24262f;--line:#33353f;--fg:#e6e6ea;--dim:#8b8d99;--acc:#4da3ff;--ok:#3ddc84;--bad:#ff6b6b;--warn:#ffb454}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Microsoft YaHei",system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--p);border-bottom:1px solid var(--line);
+ padding:10px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+header h1{font-size:15px;margin:0 10px 0 0;font-weight:600}
+button,select,input,textarea{font:inherit;color:inherit;background:var(--k);border:1px solid var(--line);
+ border-radius:7px;padding:6px 10px;outline:none}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button.pri{background:var(--acc);color:#00203d;border-color:var(--acc);font-weight:700}
+main{display:grid;grid-template-columns:200px 1fr;min-height:calc(100vh - 55px)}
+#tabs{border-right:1px solid var(--line);background:var(--p);padding:10px}
+.tt{padding:8px 10px;border-radius:7px;margin-bottom:4px;cursor:pointer;border:1px solid transparent;word-break:break-all}
+.tt.sel{background:var(--k);border-color:var(--acc)}
+#body{padding:16px 20px;overflow:auto}
+.grp{background:var(--p);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:14px}
+.grp>h3{margin:0 0 10px;font-size:13px;color:var(--dim);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+table{width:100%;border-collapse:collapse}
+td{padding:3px 4px;vertical-align:middle}
+td input,td select{width:100%;padding:5px 7px;font-size:13px}
+tr.b{border-top:1px solid var(--line)}
+.hint{color:var(--dim);font-size:12px}
+#msg{font-size:13px;padding:2px 8px;border-radius:6px}
+#msg.ok{background:#12301f;color:var(--ok)}#msg.bad{background:#3a1518;color:var(--bad)}
+#json{width:100%;height:58vh;font:12px/1.5 Consolas,monospace;white-space:pre}
+dialog{background:var(--p);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:16px;width:min(820px,92vw)}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+.kk{display:inline-block;background:var(--k);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin:2px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>bedremote 面板编辑器</h1>
+  <button id="addTab">＋ 页签</button>
+  <button id="addGrp">＋ 分组</button>
+  <button id="save" class="pri">保存并生效</button>
+  <button id="jsonBtn">JSON 模式</button>
+  <button id="refBtn">按键对照表</button>
+  <span id="msg"></span>
+  <span class="hint" style="margin-left:auto">保存后，手机上已打开的页面会自动刷新</span>
+</header>
+<main>
+  <div id="tabs"></div>
+  <div id="body"></div>
+</main>
+
+<dialog id="dlg">
+  <div id="dlgTitle" style="font-weight:600;margin-bottom:8px"></div>
+  <div id="dlgBody"></div>
+  <div style="margin-top:12px"><button id="dlgClose">关闭</button><button id="dlgApply" class="pri">应用</button></div>
+</dialog>
+
+<script>
+(function(){
+"use strict";
+var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
+var P={tabs:[]}, cur=0;
+var ACTS=[["key","按键"],["combo","组合键"],["text","输入文字"],["paste","粘贴(走剪贴板)"],
+ ["screen","跳到某块屏"],["power","关显示器"],["awake","防睡眠开关"],["run","白名单命令"],
+ ["reload","重载手机页"],["tab","切到某页签"],["clearmods","清除修饰键"]];
+var KEYS=("enter esc tab space backspace del ins up down left right home end pgup pgdn caps "+
+ "win menu printscreen pause playpause nexttrack prevtrack stoptrack mute volup voldown "+
+ "f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 "+
+ "a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9").split(" ");
+
+function q(s){return document.querySelector(s)}
+function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
+function say(t,ok){var m=q("#msg");m.textContent=t;m.className=ok?"ok":"bad";clearTimeout(say._t);
+  say._t=setTimeout(function(){m.textContent="";m.className=""},4000)}
+
+/* ---------- 读写 ---------- */
+function load(){
+  fetch("/panel?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){return r.json()}).then(function(p){
+    P=p&&p.tabs?p:{tabs:[]}; cur=0; render();
+  },function(){P={tabs:[]};render();say("读不到面板，从空开始",false)});
+}
+function save(){
+  fetch("/panel/save?t="+encodeURIComponent(T),{method:"POST",body:JSON.stringify(P)})
+   .then(function(r){return r.json().then(function(j){return{code:r.status,j:j}})})
+   .then(function(x){ x.j&&x.j.ok ? say("已保存，手机上立刻生效",true) : say("保存失败："+((x.j&&x.j.err)||x.code),false) })
+   .catch(function(e){say("保存失败："+e,false)});
+}
+
+/* ---------- 渲染 ---------- */
+function render(){
+  var box=q("#tabs");box.innerHTML="";
+  P.tabs.forEach(function(t,i){
+    var d=el("div","tt"+(i===cur?" sel":""),t.name||("页签"+(i+1)));
+    d.onclick=function(){cur=i;render()};
+    box.appendChild(d);
+  });
+  if(!P.tabs.length) box.appendChild(el("div","hint","还没有页签，点上面「＋ 页签」"));
+  var b=q("#body");b.innerHTML="";
+  var tab=P.tabs[cur]; if(!tab){b.appendChild(el("div","hint","左边选一个页签，或新建一个"));return}
+
+  var nameRow=el("div");nameRow.style.cssText="display:flex;gap:8px;align-items:center;margin-bottom:12px";
+  var ni=el("input");ni.value=tab.name||"";ni.style.flex="0 0 220px";
+  ni.oninput=function(){tab.name=ni.value;var d=q("#tabs .tt.sel");if(d)d.textContent=tab.name||"?"};
+  nameRow.appendChild(el("span","hint","页签名"));nameRow.appendChild(ni);
+  var del=el("button","dgr","删除此页签");del.style.color="#ff6b6b";
+  del.onclick=function(){if(confirm("删除页签「"+(tab.name||"")+"」？")){P.tabs.splice(cur,1);cur=0;render()}};
+  nameRow.appendChild(del);
+  b.appendChild(nameRow);
+
+  (tab.groups||[]).forEach(function(g,gi){ b.appendChild(groupCard(tab,g,gi)) });
+}
+
+function groupCard(tab,g,gi){
+  var card=el("div","grp");
+  var h=el("h3");
+  var ti=el("input");ti.value=g.title||"";ti.placeholder="分组标题";ti.style.flex="0 0 160px";
+  ti.oninput=function(){g.title=ti.value};
+  var co=el("select");[2,3,4,5,6].forEach(function(n){var o=el("option",null,n+" 列");o.value=n;if((g.cols||4)===n)o.selected=true;co.appendChild(o)});
+  co.onchange=function(){g.cols=+co.value;render()};
+  var up=el("button",null,"↑"),dn=el("button",null,"↓"),rm=el("button",null,"删分组"),ab=el("button",null,"＋ 按钮");
+  up.onclick=function(){if(gi>0){var a=tab.groups;var t=a[gi-1];a[gi-1]=a[gi];a[gi]=t;render()}};
+  dn.onclick=function(){if(gi<tab.groups.length-1){var a=tab.groups;var t=a[gi+1];a[gi+1]=a[gi];a[gi]=t;render()}};
+  rm.onclick=function(){if(confirm("删掉这个分组和里面的按钮？")){tab.groups.splice(gi,1);render()}};
+  ab.onclick=function(){g.buttons=g.buttons||[];g.buttons.push({label:"按钮",act:"key",key:"a"});render()};
+  h.appendChild(el("span",null,"分组"));h.appendChild(ti);h.appendChild(co);
+  h.appendChild(up);h.appendChild(dn);h.appendChild(rm);h.appendChild(ab);
+  card.appendChild(h);
+
+  var tb=el("table"), tbody=el("tbody");
+  tb.appendChild(tbody);
+  (g.buttons||[]).forEach(function(btn,bi){ tbody.appendChild(btnRow(g,btn,bi)) });
+  if(!(g.buttons||[]).length){
+    var er=el("tr"), etd=el("td","hint","还没有按钮，点上面「＋ 按钮」"); etd.colSpan=6; er.appendChild(etd); tbody.appendChild(er);
+  }
+  card.appendChild(tb);
+  return card;
+}
+
+function btnRow(g,btn,bi){
+  function cell(w,ctrl){var td=el("td");if(w)td.style.width=w;td.appendChild(ctrl);return td}
+  function inp(val,ph,fn){var i=el("input");i.value=val==null?"":val;i.placeholder=ph||"";i.oninput=function(){fn(i.value)};return i}
+  function sel(opts,val,fn){var s=el("select");opts.forEach(function(o){var e2=el("option",null,o[1]);e2.value=o[0];if(o[0]===val)e2.selected=true;s.appendChild(e2)});s.onchange=function(){fn(s.value);render()};return s}
+
+  var tr=el("tr","b");
+  tr.appendChild(cell("14%",inp(btn.label,"标签",function(v){btn.label=v})));
+  tr.appendChild(cell("12%",inp(btn.sub,"副标题",function(v){btn.sub=v})));
+  tr.appendChild(cell("13%",sel(ACTS,btn.act||"key",function(v){
+    btn.act=v;
+    if(v==="key"||v==="combo"){btn.key=btn.key||"a"}
+    if(v==="text"||v==="paste"){btn.text=btn.text||""}
+    if(v==="run"){btn.name=btn.name||""}
+  })));
+
+  var needKey=["key","combo"].indexOf(btn.act)>=0;
+  var needText=btn.act==="text"||btn.act==="paste";
+  var needRun=btn.act==="run";
+  var extra=el("td");extra.style.width="31%";
+  if(needKey){
+    var wrap=el("div");wrap.style.cssText="display:flex;gap:4px";
+    var kl=el("select");kl.style.flex="1";
+    KEYS.forEach(function(k){var o=el("option",null,k);o.value=k;if((btn.key||"a")===k)o.selected=true;kl.appendChild(o)});
+    kl.onchange=function(){btn.key=kl.value};
+    wrap.appendChild(kl);
+    if(btn.act==="combo"){var mi=inp(btn.mods,"ctrl+alt",function(v){btn.mods=v});mi.style.flex="1";wrap.appendChild(mi)}
+    extra.appendChild(wrap);
+  } else if(needText){ extra.appendChild(inp(btn.text,"要发出去的文字",function(v){btn.text=v})) }
+  else if(needRun){ extra.appendChild(inp(btn.name,"bedremote.json 里 run 段的命令名",function(v){btn.name=v})) }
+  else if(btn.act==="screen"){ extra.appendChild(sel([["tv","非主屏（电视）"],["0","第 1 块屏"],["1","第 2 块屏"]],String(btn.n==null?"tv":btn.n),function(v){btn.n=v})) }
+  else if(btn.act==="tab"){ extra.appendChild(inp(btn.n,"页签序号（0 起）",function(v){btn.n=v})) }
+  else extra.appendChild(el("span","hint","—"));
+  tr.appendChild(extra);
+
+  tr.appendChild(cell("14%",inp(btn.confirm,"点击前确认文案（可空）",function(v){btn.confirm=v||undefined})));
+
+  var ops=el("td");ops.style.width="16%";
+  var box=el("div");box.style.cssText="display:flex;gap:4px";
+  var t=el("button",null,"试");t.title="立刻按这个动作发一次，看电脑有没有反应";
+  t.onclick=function(){fire(btn)};
+  var u=el("button",null,"↑"),d=el("button",null,"↓"),x=el("button",null,"删");
+  u.onclick=function(){if(bi>0){var a=g.buttons;var v=a[bi-1];a[bi-1]=a[bi];a[bi]=v;render()}};
+  d.onclick=function(){if(bi<a2(g)-1){var a=g.buttons;var v=a[bi+1];a[bi+1]=a[bi];a[bi]=v;render()}};
+  x.onclick=function(){g.buttons.splice(bi,1);render()};
+  [t,u,d,x].forEach(function(b){b.style.padding="5px 8px";box.appendChild(b)});
+  ops.appendChild(box);tr.appendChild(ops);
+  return tr;
+}
+function a2(g){return (g.buttons||[]).length}
+
+/* ---------- 试触发 ---------- */
+function fire(b){
+  var e=encodeURIComponent;
+  if(b.act==="key")   fetch("/cmd?t="+T+"&c=key&k="+e(b.key||"a"),{cache:"no-store"});
+  else if(b.act==="combo") fetch("/cmd?t="+T+"&c=combo&k="+e(b.key||"a")+"&m="+e(b.mods||""),{cache:"no-store"});
+  else if(b.act==="text")  fetch("/cmd?t="+T+"&c=text&s="+e(b.text||"测试"),{cache:"no-store"});
+  else if(b.act==="paste") fetch("/cmd?t="+T+"&c=paste&s="+e(b.text||"测试"),{cache:"no-store"});
+  else if(b.act==="screen")fetch("/cmd?t="+T+"&c=screen&n="+e(b.n==null?"tv":b.n),{cache:"no-store"});
+  else if(b.act==="run")   fetch("/cmd?t="+T+"&c=run&n="+e(b.name||""),{cache:"no-store"});
+  else if(b.act==="power") alert("关显示器有黑屏风险，编辑器和手机上都要求先弹确认，这里不试。");
+  else alert("这个动作没有可试的目标（它是界面行为，不是发给电脑的指令）");
+}
+
+/* ---------- 顶栏 ---------- */
+q("#addTab").onclick=function(){P.tabs.push({name:"新页签"+(P.tabs.length+1),groups:[{title:"分组",cols:4,buttons:[]}]});cur=P.tabs.length-1;render()};
+q("#addGrp").onclick=function(){var t=P.tabs[cur];if(!t)return say("先选一个页签",false);
+  t.groups=t.groups||[];t.groups.push({title:"新分组",cols:4,buttons:[{label:"按钮",act:"key",key:"a"}]});render()};
+q("#save").onclick=save;
+q("#refBtn").onclick=function(){
+  openDlg("可用按键名", KEYS.map(function(k){return '<span class="kk">'+k+'</span>'}).join("")+
+    '<p class="hint">组合键的修饰键只认 ctrl / alt / shift / win，多个用 + 连，比如 ctrl+shift。</p>'+
+    '<p class="hint">run 动作要先在 bedremote.json 的 run 段里写好命令名，手机上才点得动；'+
+    '手机传不过去任意命令行。</p>');
+};
+q("#jsonBtn").onclick=function(){
+  openDlg("直接改 JSON（高级）",'<textarea id="json"></textarea>',true);
+  q("#json").value=JSON.stringify(P,null,2);
+  q("#dlgApply").onclick=function(){
+    try{var v=JSON.parse(q("#json").value); if(!v.tabs) throw new Error("顶层要有 tabs 数组");
+      P=v; closeDlg(); render(); say("已载入，记得点保存",true)}
+    catch(e){say("JSON 有问题："+e.message,false)}
+  };
+};
+function openDlg(title,body,wide){
+  q("#dlgTitle").textContent=title; q("#dlgBody").innerHTML=body;
+  q("#dlgApply").style.display=wide?"":"none";
+  q("#dlgApply").onclick=closeDlg;
+  q("#dlg").showModal();
+}
+function closeDlg(){q("#dlg").close()}
+q("#dlgClose").onclick=closeDlg;
+document.addEventListener("keydown",function(e){if(e.key==="s"&&(e.ctrlKey||e.metaKey)){e.preventDefault();save()}});
+
+load();
+})();
+</script>
+</body>
+</html>

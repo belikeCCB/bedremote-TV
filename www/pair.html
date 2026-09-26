@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>bedremote · 手机配对</title>
+<style>
+:root{--bg:#000;--panel:#101013;--key:#1b1b20;--line:#2e2e35;--fg:#eaeaea;--dim:#8a8a93;
+ --acc:#4da3ff;--warn:#ffb454;--ok:#3ddc84;--bad:#ff5a5a;--r:14px}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;background:var(--bg);color:var(--fg);
+ font:16px/1.45 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+body{display:flex;flex-direction:column;align-items:center;gap:18px;padding:24px 16px 40px}
+h1{font-size:20px;font-weight:600;letter-spacing:.5px}
+h1 span{color:var(--dim);font-weight:400;font-size:14px;margin-left:8px}
+#cards{display:flex;flex-wrap:wrap;gap:22px;justify-content:center;align-items:flex-start}
+#dev{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 18px;
+ min-width:420px;max-width:900px}
+#dev h2{font-size:15px;font-weight:600;margin-bottom:8px;color:var(--fg)}
+#devn{font-size:26px;font-weight:700;color:var(--acc);margin-right:6px}
+#dev table{width:100%;border-collapse:collapse;font-size:13px;color:#c9c9d2}
+#dev th{text-align:left;font-weight:400;color:var(--dim);border-bottom:1px solid var(--line);padding:3px 6px}
+#dev td{border-bottom:1px solid #1c1c21;padding:4px 6px}
+#dev .off{color:var(--dim)}
+.card{background:#fff;color:#000;border-radius:var(--r);padding:22px;display:flex;
+ flex-direction:column;align-items:center;gap:12px;box-shadow:0 0 0 1px #000,0 8px 40px #ffffff22}
+.card.alt{opacity:.72;padding:14px}
+.card.alt svg{width:190px;height:190px}
+.url{font:600 22px/1.2 ui-monospace,Consolas,monospace;word-break:break-all;text-align:center}
+.card.alt .url{font-size:15px}
+.cap{font-size:13px;color:#666;text-align:center}
+#steps{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;max-width:1000px}
+.step{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;
+ min-width:200px;max-width:300px;font-size:15px}
+.step b{display:block;color:var(--acc);font-size:13px;margin-bottom:3px;font-weight:600}
+#stat{font-size:17px;padding:9px 20px;border-radius:99px;border:1px solid var(--line);background:var(--panel)}
+#stat.ok{border-color:var(--ok);color:var(--ok)}
+#stat.wait{color:var(--dim)}
+#tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center}
+button{font:inherit;background:var(--key);color:var(--fg);border:1px solid var(--line);
+ border-radius:10px;padding:9px 16px;cursor:pointer}
+button:hover{border-color:var(--acc)}
+#note{color:var(--dim);font-size:14px;max-width:820px;text-align:center}
+#note code{color:var(--warn);background:#1a1a1f;padding:1px 6px;border-radius:5px;font-size:13px}
+#tok{color:var(--warn);font-size:14px}
+body.fs{padding-top:12px}
+body.fs h1,body.fs #steps,body.fs #note,body.fs .card.alt{display:none}
+body.fs #tools{position:fixed;right:12px;bottom:12px;opacity:.25}
+body.fs #tools:hover{opacity:1}
+</style>
+</head>
+<body>
+<h1>bedremote <span>手机配对 · 扫一下就行，不用打字</span></h1>
+<div id="cards"></div>
+<div id="stat" class="wait">等待手机连接…</div>
+<div id="dev">
+  <h2>这台电脑现在被几台设备控制</h2>
+  <div style="margin-bottom:8px"><span id="devn">0</span>台外部设备（不含这台电脑自己的浏览器）</div>
+  <table><thead><tr><th>IP</th><th>状态</th><th>指令数</th><th>最近动作</th><th>最后一条</th></tr></thead>
+  <tbody id="peers"></tbody></table>
+  <div class="cap" style="color:#8a8a93;font-size:12px;margin-top:8px;text-align:left">
+    现在没设令牌：局域网里任何设备打开上面那个地址，就能动你的鼠标键盘。这张表就是用来核对"是谁在动"的。
+    要收紧：电脑同目录的 <b>bedremote.json</b> 里设 <b>token</b>，重启服务，二维码会自动带上令牌。</div>
+</div>
+<div id="steps">
+  <div class="step"><b>1 扫码</b>打开手机自带的相机，对准这个码，点弹出的链接</div>
+  <div class="step"><b>2 加到主屏幕</b>页面打开后，点浏览器菜单里的「添加到主屏幕」，以后一键就开</div>
+  <div class="step"><b>3 前提</b>手机和电脑连的是<b>同一个 Wi-Fi</b>；手机别开"移动网络优先"</div>
+</div>
+<div id="tools">
+  <button onclick="fs()">全屏（投到电视上扫）</button>
+  <button onclick="load(true)">刷新地址</button>
+  <span id="tok"></span>
+</div>
+<div id="note">
+  扫不出来就手动输上面那行地址。<b>连不上（页面转圈打不开）</b>基本只有两个原因：
+  防火墙没放行 —— 双击 <code>allow-firewall.cmd</code>；或者路由器开了 AP 隔离 —— 退路是手机开热点、电脑连上去再扫。
+</div>
+<script src="vendor/qrcode.js"></script>
+<script>
+var lastKey = '', lastA = null;
+var TK = (location.search.match(/[?&]t=([^&]+)/) || [])[1] || '';   // 设了令牌时，本页地址里带着它
+function svgFor(url, cell) {
+  var qr = qrcode(0, 'M');            // 0 = 自动选版本；M = 中等纠错
+  qr.addData(url); qr.make();
+  var n = qr.getModuleCount(), quiet = 4, dim = (n + quiet * 2) * cell;
+  // 自己拼 SVG：整数 cell 尺寸 + 不缩放，边缘不糊，手机才扫得动。
+  // 白色底 + 4 格静区是规范要求的，缺了静区很多扫码器直接罢工。
+  var d = '';
+  for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) if (qr.isDark(r, c))
+    d += 'M' + ((c + quiet) * cell) + ' ' + ((r + quiet) * cell) + 'h' + cell + 'v' + cell + 'h-' + cell + 'z';
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + dim + '" height="' + dim +
+         '" viewBox="0 0 ' + dim + ' ' + dim + '" shape-rendering="crispEdges">' +
+         '<rect width="' + dim + '" height="' + dim + '" fill="#fff"/><path d="' + d +
+         '" fill="#000"/></svg>';
+}
+function cellSize(n) {
+  var f = document.body.classList.contains('fs');
+  var avail = Math.min(window.innerWidth - 90, window.innerHeight * (f ? 0.78 : 0.46));
+  var c = Math.floor(avail / (n + 8));
+  // 全屏（投到电视上、躺着扫）时允许更大；非全屏别超过一屏。
+  return Math.max(4, Math.min(f ? 34 : 22, c));
+}
+function render(a) {
+  var cards = document.getElementById('cards');
+  var primary = a.ips[0], others = a.ips.slice(1);
+  var suffix = a.token ? '/?t=' + encodeURIComponent(a.token) : '';
+  var mk = function (ip, alt) {
+    var url = 'http://' + ip + ':' + a.port + suffix;
+    var n = (function () { var q = qrcode(0, 'M'); q.addData(url); q.make(); return q.getModuleCount(); })();
+    var cell = alt ? 6 : cellSize(n);
+    return '<div class="card' + (alt ? ' alt' : '') + '">' + svgFor(url, cell) +
+           '<div class="url">' + url + '</div>' +
+           '<div class="cap">' + (alt ? '备用网卡地址（主那个扫不出来再试）' : '手机要打开的地址') + '</div></div>';
+  };
+  cards.innerHTML = mk(primary, false) + others.map(function (ip) { return mk(ip, true); }).join('');
+  var note = document.getElementById('note');
+  if (primary === '127.0.0.1') {
+    // 没拿到局域网 IP = 电脑根本没连网（或只连了个不通的地址），这码扫了也白扫。
+    note.innerHTML = '<b style="color:#ff5a5a">这台电脑现在没有局域网地址，手机连不上。</b>' +
+      '先让它连上路由器的 Wi-Fi（或插网线）；要用手机热点的话，让电脑连手机热点后刷新本页。';
+  }
+  document.getElementById('tok').textContent = a.token ? '已开启令牌（二维码里已带上）' : '';
+}
+// 在线状态 + 设备台账：每次都刷，不受"地址有没有变"影响
+function renderStatus(a) {
+  var st = document.getElementById('stat');
+  if (a.online > 0) { st.className = 'ok'; st.textContent = '✅ 已连接：有 ' + a.online + ' 个页面正打开着（手机好了就能用）'; }
+  else { st.className = 'wait'; st.textContent = '等待手机连接…'; }
+  var dn = document.getElementById('devn'), box = document.getElementById('peers');
+  if (!dn || !box) return;
+  var list = a.peers || [], ext = [];
+  for (var i = 0; i < list.length; i++) if (!list[i].self) ext.push(list[i]);
+  dn.textContent = ext.length;
+  function ago(s) { return s < 60 ? s + ' 秒前' : (s < 3600 ? Math.round(s / 60) + ' 分钟前' : Math.round(s / 360) / 10 + ' 小时前'); }
+  var h = '';
+  for (var j = 0; j < ext.length; j++) {
+    var p = ext[j];
+    h += '<tr><td>' + p.ip + '</td><td class="' + (p.live ? '' : 'off') + '">' +
+         (p.live ? '页面开着' : '只发过指令') + '</td><td>' + p.cmds + '</td><td>' +
+         ago(p.ago) + '</td><td>' + (p.last || '—') + '</td></tr>';
+  }
+  box.innerHTML = h || '<tr><td colspan="5" class="off">还没有外部设备连进来</td></tr>';
+}
+function load(force) {
+  fetch('addr' + (TK ? '?t=' + encodeURIComponent(TK) : '?ts=' + Date.now()), { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) throw 0; return r.json();
+  }).then(function (a) {
+    lastA = a;
+    var k = [a.port, a.token, (a.ips || []).join(',')].join('|');   // 只有地址真变了才重画二维码
+    if (force || k !== lastKey) { lastKey = k; render(a); }
+    renderStatus(a);
+  }).catch(function () {
+    var st = document.getElementById('stat');
+    st.className = 'wait'; st.textContent = '连不上本机服务：bedremote 没在跑？';
+  });
+}
+function fs() {
+  var el = document.body;
+  document.body.classList.toggle('fs');
+  if (el.requestFullscreen) el.requestFullscreen().catch(function () {});
+  setTimeout(load, 250);
+}
+addEventListener('keydown', function (e) { if (e.key === 'f' || e.key === 'F') fs(); });
+addEventListener('resize', function () { if (lastA) render(lastA); });
+load(true);
+setInterval(load, 4000);   // 电脑换了 IP（DHCP 到期重新分配）会自动跟着变
+</script>
+</body>
+</html>

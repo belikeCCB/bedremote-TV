@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<title>bedremote</title>
+<style>
+:root{--bg:#000;--panel:#101013;--key:#1b1b20;--key2:#26262c;--line:#2e2e35;--fg:#eaeaea;
+ --dim:#8a8a93;--acc:#4da3ff;--warn:#ffb454;--ok:#3ddc84;--bad:#ff5a5a;--r:12px;--gap:8px}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--fg);overscroll-behavior:none;
+ font:15px/1.3 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+ -webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+body{display:flex;flex-direction:column;height:100dvh;padding-bottom:env(safe-area-inset-bottom)}
+button{font:inherit;color:inherit;background:var(--key);border:1px solid var(--line);border-radius:var(--r);
+ min-height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+ line-height:1.15;touch-action:manipulation;padding:4px 6px;text-align:center}
+button:active,button.on{background:#20304a;border-color:var(--acc);color:#fff}
+button .sub{font-size:10px;color:var(--dim);font-weight:normal}
+button.acc{background:#16324d;border-color:#2c5f8a}
+#bar{display:flex;align-items:center;gap:8px;padding:calc(env(safe-area-inset-top) + 6px) 10px 6px;
+ background:var(--panel);border-bottom:1px solid var(--line);font-size:12px;color:var(--dim);flex:0 0 auto}
+#dot{width:9px;height:9px;border-radius:50%;background:var(--bad);flex:0 0 auto}
+#dot.good{background:var(--ok)}
+#win{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:#b9b9c2}
+#bar button{min-height:30px;padding:0 10px;font-size:12px;border-radius:8px;flex:0 0 auto}
+main{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px}
+section{display:none}section.show{display:block}
+.mon{border:1px solid var(--line);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--panel)}
+.mon.off{opacity:.62}
+.monh{display:flex;align-items:center;gap:6px;margin-bottom:5px;flex-wrap:wrap}
+.monh b{font-size:15px}
+.tm{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:0 6px;white-space:nowrap}
+.grid{display:grid;gap:var(--gap)}
+.sect{font-size:11px;color:var(--dim);margin:14px 2px 6px;letter-spacing:.08em}
+.sect:first-child{margin-top:2px}
+#pad{position:relative;height:42dvh;min-height:190px;border-radius:16px;touch-action:none;overflow:hidden;
+ background:radial-gradient(120% 120% at 50% 0%,#17171c,#0b0b0e);border:1px solid var(--line);
+ display:flex;align-items:center;justify-content:center}
+#pad .hint{color:#3a3a44;font-size:13px;pointer-events:none;text-align:center}
+#prow{display:grid;grid-template-columns:repeat(5,1fr);gap:var(--gap);margin-top:var(--gap)}
+#speed{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px;color:var(--dim)}
+#speed input{flex:1;accent-color:var(--acc);height:30px}
+.mod.stuck{background:#3a2b12;border-color:var(--warn);color:#fff}
+.in{background:var(--key);border:1px solid var(--line);border-radius:var(--r);color:var(--fg);
+ font-size:16px;padding:0 12px;min-height:52px;outline:none;width:100%}
+.in:focus{border-color:var(--acc)}
+.row{display:flex;gap:var(--gap)}
+.msg{background:var(--key);border-left:3px solid var(--acc);border-radius:8px;padding:9px 11px;
+ font-size:14px;word-break:break-word;margin-bottom:6px}
+.msg .tm{color:var(--dim);font-size:11px;margin-right:8px}
+.msg.me{border-left-color:var(--ok)}.msg.ev{border-left-color:var(--warn)}
+#okno{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);margin-bottom:var(--gap)}
+#ok{background:#123021;border-color:var(--ok)}#no{background:#331518;border-color:var(--bad)}
+nav{flex:0 0 auto;display:flex;background:var(--panel);border-top:1px solid var(--line);overflow-x:auto}
+nav button{flex:1 1 auto;border-radius:0;min-height:54px;background:transparent;border:none;font-size:14px;
+ position:relative;min-width:72px;flex-direction:row;gap:4px}
+nav button.sel{background:#17171d;color:#fff;box-shadow:inset 0 2px 0 var(--acc)}
+#badge{min-width:18px;height:18px;border-radius:9px;background:var(--warn);color:#000;font-size:11px;
+ font-weight:700;display:none;align-items:center;justify-content:center}
+#off{position:fixed;inset:0;background:rgba(0,0,0,.9);display:none;flex-direction:column;
+ align-items:center;justify-content:center;gap:16px;z-index:50;text-align:center;padding:24px}
+#off.on{display:flex}
+#qr{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;flex-direction:column;
+ align-items:center;justify-content:center;gap:14px;z-index:70;text-align:center;padding:20px}
+#qr.on{display:flex}
+#qrbox{background:#fff;border-radius:14px;padding:16px;line-height:0}
+#qrtxt{color:#dcdce2;font-size:13px;max-width:420px;line-height:1.6}
+#qrtxt b{color:var(--warn)}
+#qr .close{min-height:48px;padding:0 24px;background:var(--key);border:1px solid var(--line);color:var(--fg);font-size:14px}
+#devs{color:var(--acc);font-weight:600}
+#off button{min-height:56px;padding:0 26px;background:var(--acc);color:#00203d;border:none;font-weight:700}
+.note{font-size:11px;color:var(--dim);margin-top:10px;line-height:1.6}
+#lock{position:fixed;left:0;right:0;top:0;background:#5a2318;color:#ffd9d0;font-size:12px;
+ padding:6px 10px;display:none;z-index:60}
+</style>
+</head>
+<body>
+<div id="lock"></div>
+<div id="bar"><span id="dot"></span><span id="rtt">—</span><span id="devs"></span><span id="win">连接中…</span>
+ <button id="fsb">⛶</button><button id="qrb">加设备</button><button id="editb">改按钮</button></div>
+<main id="main"></main>
+<nav id="nav"></nav>
+<div id="off"><div id="offmsg">连不上电脑</div><button onclick="location.reload()">重试</button></div>
+<div id="qr"><div id="qrbox"></div><div id="qrtxt"></div><button class="close" id="qrclose">关闭</button></div>
+
+<script src="vendor/qrcode.js"></script>
+<script>
+(function(){
+"use strict";
+var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
+var $=function(s){return document.querySelector(s)};
+var main=$("#main"), nav=$("#nav");
+var buzz=function(m){try{navigator.vibrate&&navigator.vibrate(m||12)}catch(e){}};
+
+function api(p){
+  return fetch("/cmd?t="+encodeURIComponent(T)+"&"+p,{cache:"no-store"}).then(function(r){
+    if(!r.ok) throw new Error("http"+r.status);
+    return r.text();
+  });
+}
+var inflight=0;
+function send(p){
+  if(inflight>6) return Promise.resolve("busy");
+  inflight++;
+  return api(p).then(function(x){inflight--;return x},function(e){inflight--;offline(true);return "err"});
+}
+
+/* ---------- 连接 ---------- */
+function offline(v){
+  $("#dot").className=v?"":"good";
+  if(v){$("#offmsg").textContent="连不上电脑：PC 上的 bedremote 还开着吗 / 手机和 PC 在同一个路由器吗 / 防火墙放行了吗";$("#off").classList.add("on");}
+  else $("#off").classList.remove("on");
+}
+function ping(){
+  var t0=performance.now();
+  api("c=ping&ts="+t0).then(function(){
+    $("#rtt").textContent=Math.round(performance.now()-t0)+"ms";offline(false);
+  },function(){offline(true)});
+}
+setInterval(ping,2000);ping();
+
+var es=null,unseen=0,curTab=0;
+function sse(){
+  try{if(es)es.close()}catch(e){}
+  es=new EventSource("/events?t="+encodeURIComponent(T));
+  es.onmessage=function(m){
+    var d;try{d=JSON.parse(m.data)}catch(e){return}
+    if(d.e==="win")$("#win").textContent=d.t||"（无标题窗口）";
+    else if(d.e==="msg")addMsg(d.t,"");
+    else if(d.e==="reply"){addMsg(d.t,"me");$("#okno").style.display="none"}
+    else if(d.e==="ask"){addMsg(d.t,"ev");$("#okno").style.display="grid"}
+    else if(d.e==="locked")showLock(d.t);
+    else if(d.e==="panel")loadPanel();
+    else if(d.e==="mons")loadMons();
+    else if(d.e==="peers")showPeers(d);
+    else if(d.e==="reset")$("#log").innerHTML="";
+  };
+  es.onerror=function(){/* EventSource 自己会重连 */};
+}
+document.addEventListener("visibilitychange",function(){if(!document.hidden){sse();ping()}});
+function showLock(t){var e=$("#lock");e.textContent=t;e.style.display="block";clearTimeout(e._t);e._t=setTimeout(function(){e.style.display="none"},6000)}
+
+/* ---------- 动作 DSL ---------- */
+function fire(b){
+  buzz();
+  var a=b.act;
+  if(b.confirm&&!confirm(b.confirm))return;
+  var e=function(s){return encodeURIComponent(s==null?"":s)};
+  if(a==="key")   send(mods.length?"c=combo&k="+e(b.key)+"&m="+e(mods.join("+")):"c=key&k="+e(b.key));
+  else if(a==="combo") send("c=combo&k="+e(b.key)+"&m="+e(b.mods||""));
+  else if(a==="text")  send("c=text&s="+e(b.text||""));
+  else if(a==="paste") send("c=paste&s="+e(b.text||""));
+  else if(a==="screen")  send("c=screen&n="+e(b.n==null?"tv":b.n));
+  else if(a==="power")   send("c=power");
+  else if(a==="awake"){ awake=!awake; send("c=awake&on="+(awake?1:0)); }
+  else if(a==="run")     send("c=run&n="+e(b.name||""));
+  else if(a==="reload")  location.reload();
+  else if(a==="tab")     show(+b.n||0);
+  else if(a==="clearmods") clearMods();
+  if(a==="key"||a==="combo") clearMods();
+}
+
+/* ---------- 配置面板渲染 ---------- */
+var panels=null;
+function loadPanel(){
+  fetch("/panel?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){return r.json()}).then(function(p){
+    panels=p;try{localStorage.setItem("br_panel",JSON.stringify(p))}catch(e){}
+    render();
+  },function(){
+    try{panels=JSON.parse(localStorage.getItem("br_panel")||"null")}catch(e){}
+    render();
+  });
+}
+function el(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
+
+function render(){
+  main.innerHTML="";nav.innerHTML="";
+  var tabs=(panels&&panels.tabs)||[];
+  var n=0;
+  tabs.forEach(function(tab){
+    var sec=el("section");sec.id="s"+n;
+    (tab.groups||[]).forEach(function(g){
+      if(g.title)sec.appendChild(el("div","sect",g.title));
+      var grid=el("div","grid");
+      grid.style.gridTemplateColumns="repeat("+(g.cols||4)+",1fr)";
+      (g.buttons||[]).forEach(function(b){
+        var e=el("button",b.class||"",b.label||"·");
+        if(b.act==="awake"&&awake)e.classList.add("on");
+        if(b.sub){var s=el("span","sub",b.sub);e.appendChild(s)}
+        e.act=b.act;e.b=b;
+        e.onclick=function(){fire(this.b);if(this.act==="awake")this.classList.toggle("on",awake)};
+        grid.appendChild(e);
+      });
+      sec.appendChild(grid);
+    });
+    main.appendChild(sec);nav.appendChild(navBtn(n++,tab.name||"?"));
+  });
+  main.appendChild(padSection());   nav.appendChild(navBtn(n++,"触控板"));
+  main.appendChild(typeSection());  nav.appendChild(navBtn(n++,"打字"));
+  screenTab=n; main.appendChild(screenSection()); nav.appendChild(navBtn(n++,"屏幕"));
+  main.appendChild(agentSection()); nav.appendChild(navBtn(n++,"Agent"));
+  buildAgentRefs();
+  buildScreenRefs();
+  loadMons();
+  show(Math.min(curTab,n-1));
+}
+function navBtn(i,label){
+  var b=el("button",null,label);
+  if(label==="Agent"){var g=el("span");g.id="badge";b.appendChild(g)}
+  b.onclick=function(){buzz();show(i)};
+  b._i=i;return b;
+}
+function show(i){
+  curTab=i;
+  var ss=main.querySelectorAll("section"),ns=nav.querySelectorAll("button");
+  for(var k=0;k<ss.length;k++){ss[k].className=k===i?"show":"";if(ns[k])ns[k].className=k===i?"sel":""}
+  if(i===ss.length-1){unseen=0;var b=$("#badge");if(b)b.style.display="none"}
+  if(i===screenTab)loadMons();
+  try{localStorage.setItem("br_tab",i)}catch(e){}
+}
+
+/* ---------- 屏幕（按屏点名控制） ---------- */
+var mons=[],monsAuto=true,monsDdcOff=false,screenTab=-1;
+function screenSection(){
+  var s=el("section");
+  s.innerHTML='<div class="sect">显示器</div>'+
+   '<div class="row"><button id="cyco" class="acc">轮换：只留下一块屏</button><button id="cycp">轮换：主屏给下一块</button></div>'+
+   '<div id="monlist"></div>'+
+   '<div class="row"><button id="monauto" class="acc"></button><button id="monundo">撤销上一步</button><button id="monreload">刷新</button></div>'+
+   '<div class="note">'+
+   '「<b>只留这块屏</b>」= 一键：把它设成主屏，同时切断其他所有屏的信号。躺着看片、坐回桌前都是这一下。它现在是无信号状态也能按（会先叫醒它）。<br>'+
+   '「设为主屏」= 只换主屏（任务栏、新窗口、全屏游戏的默认落点跟着走），一块屏都不关。<br>'+
+   '「无信号」= 只切这一块，别的不管。桌面会重排，它上面的窗口挪到别的屏；接回来就恢复。<br>'+
+   '「重插线（救）」= 软件版拔插数据线（摘掉再立刻接回），哪块屏黑着叫不醒时用它救。<br>'+
+   '「熄灭（不动布局）」默认禁用：有的面板软关之后连 DDC 都不应答，命令叫不醒、只能起身拔线，要开得在配置里改 <code>ddcOff</code>。<br>'+
+   '按错了就按「撤销上一步」，回到上一个显示配置。</div>';
+  return s;
+}
+function buildScreenRefs(){
+  var au=$("#monauto");
+  var paint=function(){au.textContent="自动接回："+(monsAuto?"开 (20 秒)":"关");au.className=monsAuto?"on acc":"acc"};
+  au.onclick=function(){buzz();monsAuto=!monsAuto;paint()};
+  paint();
+  $("#monreload").onclick=function(){buzz();loadMons()};
+  $("#monundo").onclick=function(){buzz();send("c=undo");setTimeout(loadMons,4000)};
+  $("#cycp").onclick=function(){buzz();send("c=cyclep");setTimeout(loadMons,4000)};
+  $("#cyco").onclick=function(){buzz();if(confirm("只留一块屏：其余屏全部切断信号，任务栏/新窗口都会挪过去。按错了用「撤销上一步」。继续？")){send("c=cycleo");setTimeout(loadMons,6000)}};
+}
+function loadMons(){
+  return api("c=mons").then(function(t){
+    try{var d=JSON.parse(t);mons=d.mons||[];monsDdcOff=!!d.ddcOff}catch(e){mons=[]}
+    paintMons();
+  },function(){});
+}
+function paintMons(){
+  var box=$("#monlist");if(!box)return;
+  if(!mons.length){box.innerHTML='<div class="note">没读到显示器信息，点"刷新"</div>';return}
+  var e=function(s){return encodeURIComponent(s==null?"":s)};
+  var h="";
+  mons.forEach(function(m){
+    var res=m.act?(m.w+"×"+m.h+(m.hz?" "+m.hz:"")+" · "+m.tech):"当前无信号";
+    var tag=m.prim?'<span class="tm">主屏</span>':(m.act?"":'<span class="tm">已关</span>');
+    if(m.clone)tag+='<span class="tm" style="color:var(--warn);border-color:var(--warn)">克隆</span>';
+    h+='<div class="mon'+(m.act?"":" off")+'"><div class="monh"><b>'+m.name+'</b>'+tag+
+       (m.dev?'<span class="tm">'+m.dev+'</span>':'')+'</div>'+
+       '<div class="note" style="margin:0 0 7px">'+res+'</div><div class="row">';
+    h+='<button data-only="'+m.uid+'" class="acc">'+(m.act?"只留这块屏":"切回这块屏")+'</button>';
+    if(m.act&&!m.clone&&!m.prim)h+='<button data-primary="'+m.uid+'">设为主屏</button>';
+    if(m.act&&!m.clone&&m.i>=0)h+='<button data-jump="'+m.i+'">跳过去</button>';
+    if(m.act&&!m.clone)h+='<button data-blank="'+m.uid+'" data-prim="'+(m.prim?1:0)+'">无信号</button>';
+    if(m.act&&!m.clone&&m.ddc&&monsDdcOff)h+='<button data-ddc="'+m.uid+'">熄灭</button>';
+    if(!m.act)h+='<button data-wake="'+m.uid+'" style="background:#16324d">唤醒</button>';
+    if(m.clone)h+='<button data-wake="'+m.uid+'" style="background:#16324d">修克隆</button>';
+    if(m.act&&!m.clone)h+='<button data-rescue="'+m.uid+'" style="border-color:var(--warn);color:var(--warn)">重插线(救)</button>';
+    h+='</div></div>';
+  });
+  box.innerHTML=h;
+  var btns=box.querySelectorAll("button");
+  for(var i=0;i<btns.length;i++)btns[i].onclick=function(){
+    buzz();var d=this.dataset;
+    if(d.only!=null){send("c=only&mt="+e(d.only));setTimeout(loadMons,5000);return}
+    if(d.primary!=null){send("c=primary&mt="+e(d.primary));setTimeout(loadMons,4000);return}
+    if(d.jump!=null)return send("c=screen&n="+e(d.jump));
+    if(d.blank!=null){
+      if(d.prim==="1"&&!confirm("这是主屏：摘掉后桌面会重排、窗口会挪到别的屏。继续？"))return;
+      var q="c=blank&mt="+e(d.blank);if(monsAuto)q+="&sec=20";
+      send(q);setTimeout(loadMons,2500);return;
+    }
+    if(d.ddc!=null){send("c=blank&mt="+e(d.ddc)+"&m=ddc");return}
+    if(d.rescue!=null){
+      if(!confirm("救援动作：会摘掉这块屏再立刻接回（桌面会重排、窗口会挪到别的屏）。只在这块屏黑着叫不醒时用。继续？"))return;
+      send("c=rescue&mt="+e(d.rescue));setTimeout(loadMons,5000);return;
+    }
+    if(d.wake!=null){send("c=wake&mt="+e(d.wake));setTimeout(loadMons,2500);return}
+  };
+}
+
+/* ---------- 触控板 ---------- */
+var speed=1.4,absMode=false,dragging=false;
+try{var ls=localStorage.getItem("br_sp");if(ls){speed=+ls}}catch(e){}
+function padSection(){
+  var s=el("section");
+  s.innerHTML=
+   '<div id="pad"><div class="hint">手指在此滑动 = 移动光标<br>双指上下 = 滚轮</div></div>'+
+   '<div id="prow">'+
+   '<button data-b="left">点击<span class="sub">左键</span></button>'+
+   '<button data-b="right">右击</button><button data-b="mid">中键</button>'+
+   '<button data-b="left" data-d="dbl">双击</button><button id="bDrag">拖拽<span class="sub">关</span></button>'+
+   '</div>'+
+   '<div id="speed"><span>慢</span><input type="range" id="sp" min="0.3" max="4" step="0.1"><span>快</span>'+
+   '<button id="absMode" style="min-height:34px;font-size:12px;padding:0 10px;flex-direction:row"></button></div>'+
+   '<div class="note">先把光标移到目标上再按"点击"，抬手抖动就不会点歪。'+
+   '开"点哪跳哪"后按下手指会把光标直接放到对应的桌面位置。</div>';
+  setTimeout(function(){wirePad(s)},0);
+  return s;
+}
+function wirePad(s){
+  $("#sp").value=speed;$("#absMode").textContent="点哪跳哪："+(absMode?"开":"关");
+  $("#sp").oninput=function(){speed=+this.value;try{localStorage.setItem("br_sp",speed)}catch(e){}};
+  $("#absMode").onclick=function(){absMode=!absMode;this.textContent="点哪跳哪："+(absMode?"开":"关");this.classList.toggle("on",absMode)};
+  $("#bDrag").onclick=function(){dragging=!dragging;this.querySelector(".sub").textContent=dragging?"开":"关";this.classList.toggle("on",dragging)};
+  s.querySelectorAll("#prow button").forEach(function(b){
+    b.onclick=function(){buzz();var d=b.dataset.d||"click";send("c=btn&b="+b.dataset.b+"&d="+d)};
+  });
+  var pad=$("#pad"),pts={},multi=false,my=0;
+  pad.addEventListener("pointerdown",function(e){
+    try{pad.setPointerCapture(e.pointerId)}catch(x){}
+    pts[e.pointerId]={x:e.clientX,y:e.clientY};
+    multi=Object.keys(pts).length>=2;
+    if(!multi){my=e.clientY;
+      if(absMode){var r=pad.getBoundingClientRect();
+        send("c=abs&x="+((e.clientX-r.left)/r.width).toFixed(4)+"&y="+((e.clientY-r.top)/r.height).toFixed(4))}
+      if(dragging)send("c=btn&b=left&d=down");
+    }
+    e.preventDefault();
+  });
+  pad.addEventListener("pointermove",function(e){
+    var p=pts[e.pointerId];if(!p)return;
+    var dx=e.clientX-p.x,dy=e.clientY-p.y;p.x=e.clientX;p.y=e.clientY;
+    if(multi){var d=e.clientY-my;my=e.clientY;var l=Math.round(d/28);if(l)send("c=wheel&d="+(-l*120));return}
+    if(!absMode)move(dx*speed,dy*speed);
+    e.preventDefault();
+  });
+  function up(e){if(!pts[e.pointerId])return;delete pts[e.pointerId];
+    multi=Object.keys(pts).length>=2;
+    if(!Object.keys(pts).length&&dragging)send("c=btn&b=left&d=up")}
+  pad.addEventListener("pointerup",up);pad.addEventListener("pointercancel",up);
+  pad.addEventListener("contextmenu",function(e){e.preventDefault()});
+}
+var accX=0,accY=0,tick=false;
+function move(dx,dy){accX+=dx;accY+=dy;if(!tick){tick=true;requestAnimationFrame(flush)}}
+function flush(){tick=false;if(!absMode&&(accX||accY)){
+  var dx=Math.round(accX),dy=Math.round(accY);accX-=dx;accY-=dy;
+  if(dx||dy)send("c=move&dx="+dx+"&dy="+dy)}}
+
+/* ---------- 打字 ---------- */
+var mods=[];
+function clearMods(){mods=[];document.querySelectorAll(".mod").forEach(function(b){b.classList.remove("stuck")})}
+var KEYS=[["esc","Esc"],["tab","Tab"],["enter","↵"],["backspace","⌫"],["del","Del"],["space","空格"],
+ ["up","↑"],["left","←"],["down","↓"],["right","→"],["home","Home"],["end","End"],
+ ["pgup","PgUp"],["pgdn","PgDn"],["printscreen","截图"],["f5","刷新"],["f2","重命名"],["menu","右键菜单"]];
+function typeSection(){
+  var s=el("section");
+  var h='<div class="sect">修饰键（按一下粘住，下个键生效）</div><div class="grid" style="grid-template-columns:repeat(5,1fr)">';
+  ["ctrl","alt","shift","win"].forEach(function(m){h+='<button class="mod" data-mod="'+m+'">'+m.toUpperCase()+'</button>'});
+  h+='<button id="modClear" style="font-size:12px">清除</button></div>';
+  h+='<div class="sect">功能键</div><div class="grid" style="grid-template-columns:repeat(6,1fr)">';
+  for(var i=1;i<=12;i++)h+='<button data-k="f'+i+'" style="min-height:44px;font-size:13px">F'+i+'</button>';
+  h+='</div><div class="sect">方向与编辑</div><div class="grid" style="grid-template-columns:repeat(6,1fr)">';
+  KEYS.forEach(function(k){h+='<button data-k="'+k[0]+'" style="min-height:46px;font-size:13px">'+k[1]+'</button>'});
+  h+='</div><div class="sect">文字（中文在手机输入法里打，这里只负责送过去）</div>';
+  h+='<div class="row"><input id="txt" class="in" type="text" placeholder="点这里打字，然后按发送" autocomplete="off" spellcheck="false">'+
+     '<button id="sendTxt" style="flex:0 0 auto;padding:0 16px;background:var(--acc);color:#00203d;border:none;font-weight:700">发送</button></div>';
+  h+='<div class="grid" style="grid-template-columns:repeat(3,1fr);margin-top:8px">'+
+     '<button id="pasteTxt">长文本粘贴<span class="sub">走剪贴板</span></button>'+
+     '<button id="sendTxtEnter">发送+回车</button><button id="clearTxt">清空</button></div>';
+  h+='<div class="sect">常用短语（长按可改）</div><div id="ph" class="grid" style="grid-template-columns:repeat(3,1fr)"></div>';
+  h+='<div class="note">发送走 Unicode 直投，不经过电脑上的输入法。<br>'+
+     '字没出来的两种情况：电脑锁屏了（顶部会提示），或者那个输入框在以管理员身份运行的程序里。</div>';
+  s.innerHTML=h;
+  setTimeout(function(){wireType(s)},0);
+  return s;
+}
+function wireType(s){
+  s.querySelectorAll(".mod").forEach(function(b){
+    b.onclick=function(){buzz();var m=b.dataset.mod,i=mods.indexOf(m);
+      if(i>=0)mods.splice(i,1);else mods.push(m);
+      b.classList.toggle("stuck",mods.indexOf(m)>=0)};
+  });
+  $("#modClear").onclick=function(){buzz();clearMods()};
+  s.querySelectorAll("[data-k]").forEach(function(b){
+    b.onclick=function(){buzz();
+      if(mods.length)send("c=combo&k="+encodeURIComponent(b.dataset.k)+"&m="+encodeURIComponent(mods.join("+")));
+      else send("c=key&k="+encodeURIComponent(b.dataset.k));
+      clearMods()};
+  });
+  var g=function(){return document.querySelector("#txt").value};
+  $("#sendTxt").onclick=function(){var v=g();if(!v)return;buzz();send("c=text&s="+encodeURIComponent(v));document.querySelector("#txt").value=""};
+  $("#sendTxtEnter").onclick=function(){var v=g();if(!v)return;buzz();
+    send("c=text&s="+encodeURIComponent(v)).then(function(){setTimeout(function(){send("c=key&k=enter")},80)});
+    document.querySelector("#txt").value=""};
+  $("#clearTxt").onclick=function(){var t=document.querySelector("#txt");t.value="";t.focus()};
+  $("#pasteTxt").onclick=function(){var v=g();if(!v)return;buzz();send("c=paste&s="+encodeURIComponent(v))};
+  var ph;try{ph=JSON.parse(localStorage.getItem("br_ph")||"null")}catch(e){}
+  if(!ph)ph=["https://","www.bilibili.com",".com",".cn","继续","好了"];
+  var box=document.querySelector("#ph");
+  function draw(){box.innerHTML="";ph.forEach(function(v,i){
+    var b=el("button",null,v||"（空）");b.style.minHeight="46px";b.style.fontSize="13px";
+    var to=null;
+    b.onclick=function(){buzz();send("c=text&s="+encodeURIComponent(v))};
+    b.addEventListener("pointerdown",function(){to=setTimeout(function(){to=null;var x=prompt("第 "+(i+1)+" 个短语：",ph[i]);if(x!==null){ph[i]=x;try{localStorage.setItem("br_ph",JSON.stringify(ph))}catch(e){}draw()}},600)});
+    b.addEventListener("pointerup",function(){if(to){clearTimeout(to);to=null}});
+    b.addEventListener("pointercancel",function(){if(to){clearTimeout(to);to=null}});
+    box.appendChild(b)})}
+  draw();
+}
+
+/* ---------- Agent ---------- */
+function agentSection(){
+  var s=el("section");
+  s.innerHTML='<div class="sect">电脑推过来的消息</div><div id="log"></div>'+
+   '<div id="okno" style="display:none"><button id="ok">允许</button><button id="no">拒绝</button></div>'+
+   '<div class="row"><input id="txt2" class="in" type="text" placeholder="回复一句发给电脑">'+
+   '<button id="sendReply" style="flex:0 0 auto;padding:0 16px;background:var(--acc);color:#00203d;border:none;font-weight:700">回复</button></div>'+
+   '<div class="note">电脑上任何脚本都能推消息到这里：<br><code style="color:#9a9aa5;font-size:11px;word-break:break-all">curl "http://这台机的IP:8765/notify?text=跑完了"</code><br>'+
+   '要它停下来等你回答：<br><code style="color:#9a9aa5;font-size:11px;word-break:break-all">curl "http://这台机的IP:8765/ask?text=要下载吗"</code><br>'+
+   '你的回复会同时写进 %LOCALAPPDATA%\\bed-remote\\last_reply.txt</div>';
+  return s;
+}
+function buildAgentRefs(){
+  var r=function(v){if(!v)return;send("c=reply&s="+encodeURIComponent(v));$("#txt2").value="";$("#okno").style.display="none"};
+  $("#sendReply").onclick=function(){r($("#txt2").value)};
+  $("#txt2").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();r(this.value)}});
+  $("#ok").onclick=function(){r("允许")};$("#no").onclick=function(){r("拒绝")};
+}
+function ts(){var d=new Date();return("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2)}
+function addMsg(t,cls){
+  var box=$("#log");if(!box)return;
+  var e=el("div","msg "+(cls||""));var s=el("span","tm",ts());
+  e.appendChild(s);e.appendChild(document.createTextNode(t||""));
+  box.insertBefore(e,box.firstChild);
+  while(box.children.length>60)box.removeChild(box.lastChild);
+  var last=main.querySelectorAll("section").length-1;
+  if(curTab!==last){unseen++;var b=$("#badge");if(b){b.textContent=unseen;b.style.display="flex"}}
+}
+
+/* ---------- 其它 ---------- */
+var awake=true;
+$("#fsb").onclick=function(){buzz();var d=document.documentElement;
+  if(document.fullscreenElement){try{document.exitFullscreen()}catch(e){}}
+  else{(d.requestFullscreen||d.webkitRequestFullscreen).call(d)}};
+$("#editb").onclick=function(){buzz();window.open("/edit?t="+encodeURIComponent(T),"_blank")};
+
+/* ---------- 邀请别的设备（常态二维码）+ 几台在控制 ---------- */
+// 已经连上的手机自己就能出码：后来的人扫这个码，不用碰电脑也不用输地址，直接进来。
+// 如果地址里带了令牌，码里就带着令牌 —— 对方扫完即直连，不用手输。
+function selfUrl(){
+  var u=location.protocol+"//"+location.host+"/";
+  if(T)u+="?t="+encodeURIComponent(T);
+  return u;
+}
+function qrSvg(text,cell){
+  var qr=qrcode(0,'M'); qr.addData(text); qr.make();
+  var n=qr.getModuleCount(),quiet=4,dim=(n+quiet*2)*cell,d="";
+  for(var r=0;r<n;r++)for(var c=0;c<n;c++)if(qr.isDark(r,c))
+    d+="M"+((c+quiet)*cell)+" "+((r+quiet)*cell)+"h"+cell+"v"+cell+"h-"+cell+"z";
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="'+dim+'" height="'+dim+
+    '" viewBox="0 0 '+dim+' '+dim+'" shape-rendering="crispEdges"><rect width="'+dim+
+    '" height="'+dim+'" fill="#fff"/><path d="'+d+'" fill="#000"/></svg>';
+}
+var peerList=[];
+function showPeers(d){
+  peerList=(d&&d.list)||[];
+  var n=(d&&d.n)||0,el=$("#devs");
+  if(el)el.textContent=n>0?(n+" 台在控制"):"";
+  var box=$("#qrpeers");
+  if(box&&!$("#qr").classList.contains("on"))return;
+  if(!box)return;
+  var h="";
+  for(var i=0;i<peerList.length;i++){
+    var p=peerList[i];
+    if(p.self)continue;
+    h+="<div>"+p.ip+(p.live?" · 页面开着":" · 只发过指令")+" · "+p.cmds+" 次 · "+
+       (p.ago<60?(p.ago+" 秒前"):Math.round(p.ago/60)+" 分钟前")+"</div>";
+  }
+  box.innerHTML=h||"<div>目前只有你一台外部设备</div>";
+}
+function loadPeers(){
+  fetch("addr?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){
+    if(!r.ok)throw 0;return r.json();
+  }).then(function(a){showPeers({n:a.devs||0,list:a.peers||[]})}).catch(function(){});
+}
+function showQr(){
+  var u=selfUrl();
+  var qr=qrcode(0,'M'); qr.addData(u); qr.make();
+  var n=qr.getModuleCount();
+  var cell=Math.max(3,Math.min(11,Math.floor(Math.min(window.innerWidth-80,window.innerHeight*0.46)/(n+8))));
+  $("#qrbox").innerHTML=qrSvg(u,cell);
+  $("#qrtxt").innerHTML=
+    "<b>别人扫这个码就能连上这台电脑</b>，跟你用的是同一个页面，不用碰电脑、不用输地址。<br>"+
+    "扫的人能动你的鼠标键盘 —— 家里人给，陌生人别给。"+
+    (T?"<br>地址里带着令牌，他扫完即直连。"
+       :"<br>你现在没设令牌：局域网里任何设备<em>不用扫码</em>也能动你的鼠标键盘。想收紧就在 bedremote.json 里设 token。")+
+    "<div id=\"qrpeers\" style=\"margin-top:8px;color:#9a9aa5;font-size:12px\"></div>";
+  $("#qr").classList.add("on");
+  loadPeers();
+}
+$("#qrb").onclick=function(){buzz();showQr()};
+$("#qrclose").onclick=function(){buzz();$("#qr").classList.remove("on")};
+addEventListener("keydown",function(e){if(e.key==="Escape")$("#qr").classList.remove("on")});
+loadPeers();
+setInterval(loadPeers,20000);
+document.addEventListener("click",function(e){
+  var t=e.target;if(t.tagName==="BUTTON"&&t.classList.contains("acc"))t.classList.add("on")});
+loadPanel();sse();
+})();
+</script>
+</body>
+</html>

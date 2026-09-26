@@ -1,0 +1,27 @@
+# 编译产物（用 build.cmd 一键就能重建，别提交二进制）
+bedremote.exe
+tools/monprobe.exe
+*.exe
+*.pdb
+*.obj
+
+# 用户自己的配置：首次运行自动生成内置默认，里面是各人的按钮和 run 白名单
+bedremote.json
+
+# 本地打包 / 调试残留
+release/
+*.zip
+*.log
+*.out.txt
+clip*.txt
+boot.log
+server.log
+
+# 开发时临时借用的第三方解码库（只用来反向验证二维码，不随仓库分发）
+www/vendor/_dev_*
+
+# 编辑器/系统垃圾
+.vs/
+Thumbs.db
+Desktop.ini
+.DS_Store
