@@ -10,8 +10,10 @@
   </trustInfo>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
-      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
-      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2,PerMonitor</dpiAwareness>
+      <!-- 系统级 DPI 感知：拿到的坐标是物理像素（SendInput 必须如此），同时避免
+           PerMonitorV2 在 .NET Framework 的 WinForms 上"窗口跨屏被重缩放、控件不跟着缩"
+           那个坑（实测：125% 主屏 + 100% 副屏之间一动，800 宽的窗体变成 640，右边整列被裁掉）。 -->
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
     </windowsSettings>
   </application>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">

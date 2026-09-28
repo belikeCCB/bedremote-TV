@@ -216,23 +216,27 @@ static class W32
     }
 
     static DateTime _lockChecked = DateTime.MinValue;
-    static bool _locked = false;
 
     // 近似判据：锁屏界面和 Ctrl+Alt+Del 界面都由 LogonUI.exe 承载，它在跑就说明
-    // 键盘鼠标注不进桌面。比 OpenInputDesktop 好在控制台进程里也能稳定拿到。
-    // 注意：UAC 提权弹窗不经过 LogonUI，那种窗口要另外看 Consent.exe。
-    public static bool LockedNow()
+    // 输入桌面已经不是你的桌面了，注入会被系统丢掉。
+    // UAC 提权确认框不经过 LogonUI，它由 Consent.exe 承载 —— 那是另一种"点不动"：
+    // 窗口本身在普通桌面上看得见，但它是**高权限窗口**，我们这种普通权限进程往里送输入
+    // 会被 UIPI 直接丢掉。两者的解法完全不同，所以这里必须分开报，别拿"先去解锁"糊弄。
+    static string _lockWhy = "";
+    public static string LockWhy()
     {
-        if ((DateTime.Now - _lockChecked).TotalMilliseconds < 500) return _locked;
+        if ((DateTime.Now - _lockChecked).TotalMilliseconds < 500) return _lockWhy;
         _lockChecked = DateTime.Now;
         try
         {
-            _locked = Process.GetProcessesByName("LogonUI").Length > 0
-                   || Process.GetProcessesByName("Consent").Length > 0;
+            bool consent = Process.GetProcessesByName("Consent").Length > 0;
+            bool logon = Process.GetProcessesByName("LogonUI").Length > 0;
+            _lockWhy = consent ? "uac" : (logon ? "lock" : "");
         }
-        catch { _locked = false; }
-        return _locked;
+        catch { _lockWhy = ""; }
+        return _lockWhy;
     }
+    public static bool LockedNow() { return LockWhy().Length > 0; }
 
     public static void KeepAwake(bool on)
     {
@@ -352,12 +356,158 @@ static class Keys
     public static bool ModExt(string m) { return string.Equals(m, "alt", StringComparison.OrdinalIgnoreCase) || string.Equals(m, "win", StringComparison.OrdinalIgnoreCase); }
 }
 
+// ---------- 手柄的"按住"状态 ----------
+// 手机当手柄和当鼠标有个本质区别：手指按住的每一秒都必须有人替它维持状态，
+// 而"抬手"那个事件是最容易丢的（锁屏、切后台、WiFi 抖一下、页面被系统回收）。
+// 丢一次的后果不是"少一个事件"，是游戏里角色一直朝前跑 —— 所以这里不按下发/抬发，
+// 而是每帧上报"我现在按住了哪些"，服务端自己差分；再配一个心跳看门狗兜底。
+static class Held
+{
+    class Holder
+    {
+        public readonly Dictionary<string, Keys.K> Ks = new Dictionary<string, Keys.K>(StringComparer.OrdinalIgnoreCase);
+        public readonly Dictionary<string, uint> Mb = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        public int Next;                       // Environment.TickCount 意义上的过期时刻
+    }
+
+    // 心跳窗口：手机默认 33ms 一帧，这里给到 900ms 才判死。
+    // 宁可松得慢一点（多跑半秒）也别松得太快 —— 一次 GC 停顿就松键会被当成 bug。
+    const int HoldMs = 900;
+    static readonly Dictionary<string, Holder> All = new Dictionary<string, Holder>();
+    static readonly object Lk = new object();
+
+    static Keys.K Resolve(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+        var k = Keys.Get(name);
+        if (k != null) return k;
+        uint mvk = Keys.ModVk(name);              // shift/ctrl/alt/win 不在 Keys.Map 里（它们本来是给 combo 用的），
+        if (mvk != 0) return new Keys.K(mvk, Keys.ModExt(name));   // 但手柄的"疾跑键"就是 shift —— 得能按住
+        uint vk;
+        return Keys.CharVk(name, out vk) ? new Keys.K(vk, false) : null;
+    }
+
+    static uint[] MbFlags(string b)
+    {
+        if (b == "right") return new[] { W32.MI_RIGHTDOWN, W32.MI_RIGHTUP };
+        if (b == "mid") return new[] { W32.MI_MIDDLEDOWN, W32.MI_MIDDLEUP };
+        if (b == "left") return new[] { W32.MI_LEFTDOWN, W32.MI_LEFTUP };
+        return null;
+    }
+
+    // 一帧：keys=当前按住的键名（逗号分隔）、mb=按住的鼠标键、dx/dy=这一帧的视角位移。
+    // 返回一个短字符串当 ack，方便手机上看到"电脑以为我现在按住了什么"。
+    public static string Frame(string who, string keys, string mbs, int dx, int dy)
+    {
+        var wantK = new List<Keys.K>();
+        var seenK = new Dictionary<string, Keys.K>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in (keys ?? "").Split(','))
+        {
+            string n = raw.Trim();
+            if (n.Length == 0 || seenK.ContainsKey(n)) continue;
+            var k = Resolve(n);
+            if (k == null) continue;                 // 不认识的键名直接丢，不让手机把服务端猜一遍
+            seenK[n] = k;
+            wantK.Add(k);
+            if (wantK.Count >= 16) break;            // 十几根手指的游戏不存在，超了就是发疯了
+        }
+
+        var wantM = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in (mbs ?? "").Split(','))
+        {
+            string n = raw.Trim();
+            if (n.Length == 0) continue;
+            if (MbFlags(n) == null) continue;
+            wantM[n] = 0;
+            if (wantM.Count >= 4) break;
+        }
+
+        if (dx > 400) dx = 400; if (dx < -400) dx = -400;
+        if (dy > 400) dy = 400; if (dy < -400) dy = -400;
+
+        Holder h;
+        lock (Lk)
+        {
+            if (!All.TryGetValue(who, out h))
+            {
+                if (All.Count > 24) All.Clear();     // 没有令牌时谁都可能发帧，别让表无限长
+                h = new Holder();
+                All[who] = h;
+            }
+            h.Next = Environment.TickCount + HoldMs;
+
+            // 先松掉这一帧里没有的，再按下新出现的：顺序反过来的话，
+            // 同一个键换名字（比如 W→D）会留下一个没人认领的按下状态。
+            var goneK = new List<string>();
+            foreach (var kv in h.Ks) if (!seenK.ContainsKey(kv.Key)) goneK.Add(kv.Key);
+            foreach (var n in goneK) { W32.Vk(h.Ks[n].Vk, h.Ks[n].Ext, true); h.Ks.Remove(n); }
+            foreach (var kv in seenK)
+                if (!h.Ks.ContainsKey(kv.Key)) { W32.Vk(kv.Value.Vk, kv.Value.Ext, false); h.Ks[kv.Key] = kv.Value; }
+
+            var goneM = new List<string>();
+            foreach (var n in h.Mb.Keys) if (!wantM.ContainsKey(n)) goneM.Add(n);
+            foreach (var n in goneM) { W32.Button(0, MbFlags(n)[1], "up"); h.Mb.Remove(n); }
+            foreach (var n in wantM.Keys)
+                if (!h.Mb.ContainsKey(n)) { W32.Button(MbFlags(n)[0], 0, "down"); h.Mb[n] = 0; }
+        }
+
+        if (dx != 0 || dy != 0) W32.MoveRelative(dx, dy);
+        return "held:" + wantK.Count + "+" + wantM.Count;
+    }
+
+    // 手机主动收手（抬手、切后台、页面关掉）时立刻叫停，不用等看门狗那 900ms。
+    public static void Release(string who)
+    {
+        Holder h;
+        lock (Lk) { if (!All.TryGetValue(who, out h)) return; All.Remove(who); }
+        ReleaseAll(h);
+    }
+
+    static void ReleaseAll(Holder h)
+    {
+        foreach (var kv in h.Ks) W32.Vk(kv.Value.Vk, kv.Value.Ext, true);
+        foreach (var kv in h.Mb) W32.Button(0, MbFlags(kv.Key)[1], "up");
+        h.Ks.Clear(); h.Mb.Clear();
+    }
+
+    public static int HeldCount()
+    {
+        lock (Lk) { int n = 0; foreach (var h in All.Values) n += h.Ks.Count + h.Mb.Count; return n; }
+    }
+
+    // 看门狗：心跳断了、或者锁屏了（这时注入会被系统丢掉，键状态就成了假的"以为还按着"），
+    // 一律立刻松干净。
+    public static void Sweep()
+    {
+        int now = Environment.TickCount;
+        bool allow = Program.InputAllowed();
+        List<KeyValuePair<string, Holder>> dead = null;
+        lock (Lk)
+        {
+            foreach (var kv in All)
+            {
+                // wrap 安全的差值：过期的判断只看"还没到点"是不是负数
+                if (!allow || (int)(kv.Value.Next - now) <= 0)
+                {
+                    if (dead == null) dead = new List<KeyValuePair<string, Holder>>();
+                    dead.Add(kv);
+                }
+            }
+            if (dead != null) foreach (var kv in dead) All.Remove(kv.Key);
+        }
+        if (dead == null) return;
+        int n = 0;
+        foreach (var kv in dead) { n += kv.Value.Ks.Count + kv.Value.Mb.Count; ReleaseAll(kv.Value); }
+        if (n > 0) Program.Log("[手柄] 松开了 " + n + " 个按住的键（" + (allow ? "心跳断了" : "锁屏/拒绝输入") + "）");
+    }
+}
+
 sealed class Sse
 {
-    public readonly NetworkStream Stream;
+    public readonly Stream Stream;            // 明文是 NetworkStream，走了 TLS 就是 SslStream
     public readonly Guid Id;
     public volatile bool Dead;
-    public Sse(NetworkStream s) { Stream = s; Id = Guid.NewGuid(); }
+    public Sse(Stream s) { Stream = s; Id = Guid.NewGuid(); }
 }
 
 static class Program
@@ -370,33 +520,96 @@ static class Program
     static string DataDir = "";
     static long Started = 0;
     static volatile bool Awake = true;
-    const string Version = "bedremote 0.6.0";
+    internal const string Version = "bedremote 0.11.0";
 
     static void Help()
     {
-        Console.WriteLine(Version);
-        Console.WriteLine("用法: bedremote.exe [--port=8765] [--token=xxxx] [--help] [--version]");
-        Console.WriteLine("配置文件: 程序同目录下的 bedremote.json（端口、令牌、面板按钮都在里面）");
-        Console.WriteLine("面板编辑器: 浏览器打开 http://127.0.0.1:<端口>/edit");
-        Console.WriteLine("按屏控制: /cmd?c=mons 列屏；c=blank&mt=<屏id>[&sec=20][&m=ddc] 让某块屏无信号；c=wake&mt=<屏id> 接回来");
+        Log(Version);
+        Log("用法: bedremote.exe [--port=8765] [--token=xxxx] [--help] [--version]");
+        Log("配置文件: 程序同目录下的 bedremote.json（端口、令牌、面板按钮都在里面）");
+        Log("面板编辑器: 浏览器打开 http://127.0.0.1:<端口>/edit");
+        Log("按屏控制: /cmd?c=mons 列屏；c=blank&mt=<屏id>[&sec=20][&m=ddc] 让某块屏无信号；c=wake&mt=<屏id> 接回来");
     }
 
     static string LastWin = "\u0000";
 
+    // ---------- 给界面用的外壳 ----------
+    static TcpListener Listener;
+    static volatile bool Serving;
+    static int StartErr;                 // 3 = 端口被占
+    static volatile bool WatchStarted;
+    static volatile bool MatesStarted;
+    static volatile bool Relaunching;            // 界面重启监听中：绑定失败先重试，别急着报"端口被占"
+    static readonly object SinksLock = new object();
+    static readonly List<Action<string>> Sinks = new List<Action<string>>();
+    static System.Security.Cryptography.X509Certificates.X509Certificate2 Cert;   // null = 只跑明文
+    internal static bool HttpsOn { get { return Cert != null; } }
+    // 换了网卡 / DHCP 重新分了 IP：SAN 里得有新地址，否则手机直接报错连"继续访问"都没有。
+    internal static void RefreshCert()
+    {
+        if (!Config.Https || !Serving) return;
+        try { Cert = Tls.Ensure(DataDir, LocalIPv4(), Log, Config.Ca); } catch { }
+    }
+
+    // 所有输出统一走这里：控制台照打，同时推给界面。图形模式下没有控制台窗口，
+    // 日志只活在界面里 —— "谁把屏幕关了"这种事必须看得见，今晚就是靠日志才定位到的。
+    internal static void Log(string s)
+    {
+        try { Console.Out.WriteLine(s); } catch { }
+        Action<string>[] arr = null;
+        lock (SinksLock) { if (Sinks.Count > 0) arr = Sinks.ToArray(); }
+        if (arr != null)
+            for (int i = 0; i < arr.Length; i++) { try { arr[i](s); } catch { } }
+    }
+    internal static void AddSink(Action<string> f) { lock (SinksLock) Sinks.Add(f); }
+    internal static bool ServingNow { get { return Serving; } }
+    internal static int PortNow { get { return Port; } }
+    internal static string TokenNow { get { return Token; } }
+    internal static int StartError { get { return StartErr; } }
+    internal static string[] IpsNow() { return LocalIPv4().ToArray(); }
+    internal static bool AwakeOn { get { return Awake; } }
+
+    internal static void SetAwake(bool on)
+    {
+        Awake = on;
+        try { W32.KeepAwake(on); } catch { }
+    }
+
+    // 界面上"正在控制这台电脑的设备"只列别人：本机自己的浏览器不算外部设备
+    internal static List<Peer> ExternalPeers()
+    {
+        lock (Peers)
+        {
+            var r = new List<Peer>();
+            foreach (var kv in Peers) if (!IsMine(kv.Key)) r.Add(kv.Value);
+            r.Sort(delegate(Peer a, Peer b) { return b.Last.CompareTo(a.Last); });
+            return r;
+        }
+    }
+
+    internal static bool StartHidden;          // --tray：界面直接缩到托盘（开机自启用）
+    internal static bool InGui;                // 服务跑在界面进程里：日志少刷屏、提示别说"关这个窗口"
+    internal static bool OpenWizard;           // --wizard：窗口一起来就把"加软件"向导摊开（也方便脚本验收）
+
     static int Main(string[] args)
     {
-        // 故意不把控制台设成 UTF-8：这台机是 936 代码页，设了反而满屏乱码，
-        // 让 .NET 按控制台自己的代码页转换即可。
         string exeDir = AppDomain.CurrentDomain.BaseDirectory;
         Config.Load(exeDir);
 
-        int cliPort = 0; string cliToken = null;
+        // 双击 = 图形界面（一个窗口 + 托盘）。--console / --service 才是原来的无界面服务模式。
+        // --port= 与 --token= 只改参数，不切模式：界面也能跑在别的端口上（测试、多实例）。
+        int cliPort = 0; string cliToken = null; bool gui = true;
         foreach (var a in args)
         {
-            if (a.StartsWith("--port=")) int.TryParse(a.Substring(7), out cliPort);
-            else if (a.StartsWith("--token=")) cliToken = a.Substring(8);
+            if (a.StartsWith("--port=")) { int.TryParse(a.Substring(7), out cliPort); }
+            else if (a.StartsWith("--token=")) { cliToken = a.Substring(8); }
             else if (a == "--help" || a == "-h") { Help(); return 0; }
-            else if (a == "--version" || a == "-v") { Console.WriteLine(Version); return 0; }
+            else if (a == "--version" || a == "-v") { Log(Version); return 0; }
+            else if (a == "--console" || a == "--no-gui" || a == "--service") gui = false;
+            else if (a == "--gui") gui = true;
+            else if (a == "--tray") { gui = true; StartHidden = true; }
+            else if (a == "--wizard") { gui = true; OpenWizard = true; }
+            else gui = false;                       // 不认识的一律按命令行处理，别悄悄进界面
         }
         Port = Config.Port;
         Token = Config.Token ?? "";
@@ -409,59 +622,227 @@ static class Program
         DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "bed-remote");
         try { Directory.CreateDirectory(DataDir); } catch { }
 
+        if (gui && Environment.UserInteractive) return Gui.Run();
+        return Serve();
+    }
+
+    static int Serve()
+    {
         var ips = LocalIPv4();
         string suffix = Token.Length > 0 ? "/?t=" + Token : "";
+        Cert = Config.Https ? Tls.Ensure(DataDir, ips, Log, Config.Ca) : null;   // null 就退回纯明文，服务照跑
 
         var listener = new TcpListener(IPAddress.Any, Port);
-        try { listener.Start(); }
-        catch (SocketException)
+        // 界面里改了 HTTPS/端口会走 Restart()：旧监听线程可能还没从 Accept 里退干净，
+        // 端口就还捏在操作系统手里。这种"被占"是几百毫秒的事，所以重启时重试绑定，
+        // 而不是立刻判定"有别的实例在跑"（那会让界面显示一个假的状态）。
+        SocketException bindErr = null;
+        int tries = Relaunching ? 16 : 1;
+        for (int attempt = 0; attempt < tries; attempt++)
+        {
+            try { listener.Start(); bindErr = null; break; }
+            catch (SocketException ex)
+            {
+                bindErr = ex;
+                listener = new TcpListener(IPAddress.Any, Port);
+                Thread.Sleep(150);
+            }
+        }
+        Relaunching = false;
+        if (bindErr != null)
         {
             // 最常见的场景：run.cmd 被点了第二次，端口已经被自己占着。
             // 这里绝不能抛出（未处理异常 → 窗口一闪就没了，只剩一句"提示异常"），
             // 而且他点这个脚本通常就是想要手机地址，顺手再打一遍。
-            Console.WriteLine("");
-            Console.WriteLine("  端口 " + Port + " 已被占用 —— bedremote 很可能已经在运行了。");
-            Console.WriteLine("  ----------------------------------------------------------------");
+            StartErr = 3;
+            Log("");
+            Log("  端口 " + Port + " 已被占用 —— bedremote 很可能已经在运行了。");
+            Log("  ----------------------------------------------------------------");
             foreach (var ip in ips)
-                Console.WriteLine("  手机直接打开:  http://" + ip + ":" + Port + suffix);
-            Console.WriteLine("  ----------------------------------------------------------------");
-            Console.WriteLine("  想重启：先双击 stop.cmd，再双击 run.cmd。");
-            Console.WriteLine("  手机不想输地址：双击 pair.cmd，屏幕出二维码，手机扫一下就直连。");
-            Console.WriteLine("  端口是别的程序占的：bedremote.exe --port=8888");
+                Log("  手机直接打开:  http://" + ip + ":" + Port + suffix);
+            Log("  ----------------------------------------------------------------");
+            if (InGui)
+                Log("  这个窗口没有自己的服务：手机连的是另一个实例。屏幕那几个按钮是本机直接调系统 API 的，照样生效。");
+            else
+            {
+                Log("  想重启：先双击 stop.cmd，再双击 run.cmd。");
+                Log("  手机不想输地址：双击 pair.cmd，屏幕出二维码，手机扫一下就直连。");
+                Log("  端口是别的程序占的：bedremote.exe --port=8888");
+            }
             return 3;
         }
+        Listener = listener; Serving = true; StartErr = 0;
 
-        Console.WriteLine("");
-        Console.WriteLine("  bedremote 已启动");
-        Console.WriteLine("  ----------------------------------------------------------------");
+        if (InGui)
+        {
+            // 界面模式下这些字都在日志框里，地址栏窗口顶上已经写过了，别刷屏
+            string sch = Cert != null ? "https" : "http";
+            Log("服务已在端口 " + Port + " 起来。" + (Token.Length > 0 ? "已设令牌。" : "未设令牌：局域网里任何设备打开地址就能控制鼠标键盘。"));
+            foreach (var ip in ips) Log("  手机地址:  " + sch + "://" + ip + ":" + Port + suffix);
+            if (Cert != null)
+                Log("  HTTPS：" + Tls.Status + "。第一次访问手机会警告\"不受信任\"，安卓 Chrome 点 高级 → 继续访问就行；" +
+                    "陀螺仪、读剪贴板、屏幕常亮这几样必须有它才拿得到。");
+            else if (Config.Https) Log("  HTTPS 没起来：" + Tls.Status + "（现在只有 http://，陀螺仪/剪贴板用不了）");
+            if (Config.Error != null) Log("  [警告] bedremote.json 解析失败，已退回内置默认面板：" + Config.Error);
+        }
+        else
+        {
+        Log("");
+        Log("  bedremote 已启动");
+        Log("  ----------------------------------------------------------------");
+        string csch = Cert != null ? "https" : "http";
         foreach (var ip in ips)
-            Console.WriteLine("  手机浏览器打开:  http://" + ip + ":" + Port + suffix);
-        Console.WriteLine("  ----------------------------------------------------------------");
+            Log("  手机浏览器打开:  " + csch + "://" + ip + ":" + Port + suffix);
+        Log("  ----------------------------------------------------------------");
+        if (Cert != null)
+            Log("  同一端口也吃 http://。HTTPS 是自签的（" + Tls.Status + "），手机第一次会警告，点继续访问即可；" +
+                "陀螺仪/剪贴板/屏幕常亮要 HTTPS 才有。");
         if (Token.Length > 0)
-            Console.WriteLine("  令牌 t=" + Token + "（地址里必须带上，否则控制指令会被拒绝）");
+            Log("  令牌 t=" + Token + "（地址里必须带上，否则控制指令会被拒绝）");
         else
-            Console.WriteLine("  未设令牌：局域网里任何设备打开上面地址就能控制你的鼠标键盘。");
-        Console.WriteLine("  想加令牌： bedremote.exe --token=xxxx  或改 bedremote.json 里的 token");
-        Console.WriteLine("  改按钮：  电脑浏览器打开 http://127.0.0.1:" + Port + "/edit");
-        Console.WriteLine("  本机推送文字到手机:  curl \"http://127.0.0.1:" + Port + "/notify?text=任务跑完了\"");
-        Console.WriteLine("  问一句并等手机回答:  curl \"http://127.0.0.1:" + Port + "/ask?text=要现在下载吗\"");
-        Console.WriteLine("  手机不想输地址:  双击 pair.cmd（或本机开 " + "http://127.0.0.1:" + Port + "/pair）出二维码，手机扫一下就直连");
+            Log("  未设令牌：局域网里任何设备打开上面地址就能控制你的鼠标键盘。");
+        Log("  想加令牌： bedremote.exe --token=xxxx  或改 bedremote.json 里的 token");
+        Log("  改按钮：  电脑浏览器打开 http://127.0.0.1:" + Port + "/edit");
+        Log("  本机推送文字到手机:  curl \"http://127.0.0.1:" + Port + "/notify?text=任务跑完了\"");
+        Log("  问一句并等手机回答:  curl \"http://127.0.0.1:" + Port + "/ask?text=要现在下载吗\"");
+        Log("  手机不想输地址:  双击 pair.cmd（或本机开 " + "http://127.0.0.1:" + Port + "/pair）出二维码，手机扫一下就直连");
         if (Config.Error != null)
-            Console.WriteLine("  [警告] bedremote.json 解析失败，已退回内置默认面板：" + Config.Error);
+            Log("  [警告] bedremote.json 解析失败，已退回内置默认面板：" + Config.Error);
         else
-            Console.WriteLine("  配置已加载：" + Config.Path + "（run 白名单 " + Config.Run.Count + " 条）");
-        Console.WriteLine("  停止: 直接关这个窗口");
-        Console.WriteLine("");
+            Log("  配置已加载：" + Config.Path + "（run 白名单 " + Config.Run.Count + " 条）");
+        Log("  停止: 直接关这个窗口");
+        Log("");
+        }
 
-        ThreadPool.QueueUserWorkItem(_ => WatchWindow());
+        if (!WatchStarted)
+        {
+            WatchStarted = true;
+            ThreadPool.QueueUserWorkItem(_ => WatchWindow());
+            ThreadPool.QueueUserWorkItem(_ => HoldWatch());
+        }
+
+        // 发现用的 UDP 听点跟服务端口无关，重启监听也不用停它；名字/端口/屏数都是现取，
+        // 所以改了机器名之后下一次心跳就带上去了。
+        if (!MatesStarted)
+        {
+            MatesStarted = true;
+            Mates.Start(delegate { return Config.NameOrMachine(); },
+                        delegate { return Port; },
+                        delegate { try { return W32.Monitors().Count; } catch { return 0; } },
+                        delegate { return Version; },
+                        delegate { return HttpsOn; });
+        }
 
         while (true)
         {
             TcpClient c;
             try { c = listener.AcceptTcpClient(); } catch { break; }
-            ThreadPool.QueueUserWorkItem(_ => Handle(c));
+            ThreadPool.QueueUserWorkItem(_ => Handle(c, Cert));
         }
+        Serving = false;
+        Listener = null;
         return 0;
+    }
+
+    internal static void StopServer()
+    {
+        Serving = false;
+        var l = Listener;
+        if (l != null) { try { l.Stop(); } catch { } }
+    }
+
+    internal static void StartInBackground()
+    {
+        Thread t = new Thread(delegate() { Serve(); });
+        t.IsBackground = true;
+        t.Start();
+    }
+
+    // 界面改了"启动时才读"的开关（HTTPS）之后重新起一次监听。
+    // 已经连上的 SSE 不会被踢 —— listener.Stop() 只关监听套接字，旧连接的线程还活着照常广播，
+    // 所以手机那边根本感觉不到（真断了 EventSource 也会自己重连）。
+    internal static void Restart()
+    {
+        Relaunching = true;
+        StopServer();
+        StartInBackground();
+    }
+
+    // 向导写完配置后调这个：run 白名单和手机面板都是"每次查/每次推"的，重载就行，不用重启程序。
+    // 端口和令牌不行（监听已经起来了），所以重载时把它们按回原值，避免出现"配置说改了但其实没生效"。
+    internal static string ReloadConfig()
+    {
+        try
+        {
+            int oldPort = Port; string oldToken = Token;
+            Config.Load(AppDomain.CurrentDomain.BaseDirectory);
+            Port = oldPort; Token = oldToken;
+            Awake = Config.KeepAwake;
+            Broadcast("{\"e\":\"panel\"}");
+            string s = "配置已重新加载：run 白名单 " + Config.Run.Count + " 条，通行证点名 " + Config.ElevatedRun.Count + " 条";
+            Log("[reload] " + s + (Config.Error != null ? "（注意：配置文件解析有问题，已退回内置默认：" + Config.Error + "）" : ""));
+            return s;
+        }
+        catch (Exception ex) { return "重载失败：" + ex.Message; }
+    }
+
+    // 端口被占时"是谁占着"：只认进程名以 bedremote 开头的，别的程序一律不报（免得界面去杀无辜进程）
+    internal static int PortOccupier(int port)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("netstat.exe", "-ano -p tcp")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+            using (var pr = Process.Start(psi))
+            {
+                string s = pr.StandardOutput.ReadToEnd();
+                try { pr.WaitForExit(2500); } catch { }
+                string tail = ":" + port;
+                foreach (var raw in s.Split('\n'))
+                {
+                    var parts = raw.Trim().Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 5) continue;
+                    if (parts[0] != "TCP") continue;
+                    if (parts[3].IndexOf("LISTENING", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (!parts[1].EndsWith(tail)) continue;
+                    int pid;
+                    if (!int.TryParse(parts[parts.Length - 1], out pid) || pid <= 0) continue;
+                    if (pid == Process.GetCurrentProcess().Id) continue;
+                    string name;
+                    try { name = Process.GetProcessById(pid).ProcessName; } catch { continue; }
+                    if (name == null || !name.StartsWith("bedremote", StringComparison.OrdinalIgnoreCase)) continue;
+                    return pid;
+                }
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    // 界面上的"接管"：把上一个还在跑的旧实例（多半是控制台版）关掉，自己重新占住端口。
+    // 只杀进程名是 bedremote* 的，且必须他点了按钮才动手。
+    internal static bool Takeover(out string how)
+    {
+        how = "";
+        int pid = PortOccupier(Port);
+        if (pid == 0) { how = "没找到占着端口 " + Port + " 的 bedremote 进程（占着的可能是别的程序），什么都没动"; return false; }
+        try
+        {
+            var p = Process.GetProcessById(pid);
+            string name = p.ProcessName;      // 名字要在关掉之前取：进程一退出，再读 ProcessName 会抛"进程已退出"
+            p.Kill();
+            try { p.WaitForExit(3000); } catch { }
+            how = "已关掉旧实例 pid " + pid + "（" + name + "）";
+        }
+        catch (InvalidOperationException) { how = "pid " + pid + " 自己已经退了"; }
+        catch (Exception ex) { how = "关不掉 pid " + pid + "：" + ex.Message; return false; }
+        StartErr = 0;
+        StartInBackground();
+        return true;
     }
 
     // 给配对页用：局域网地址、端口、令牌、当前有几个页面连着。
@@ -469,14 +850,17 @@ static class Program
     static string MonsJson()
     {
         var sb = new StringBuilder();
-        sb.Append("{\"e\":\"mons\",\"ddcOff\":").Append(Config.AllowDdcOff ? "true" : "false").Append(",\"mons\":[");
+        sb.Append("{\"e\":\"mons\",\"ddcOff\":").Append(Config.AllowDdcOff ? "true" : "false")
+          .Append(",\"autoSec\":").Append(Config.AutoWakeSec).Append(",\"mons\":[");
         var list = Disp.All(true);
         for (int i = 0; i < list.Count; i++)
         {
             var m = list[i];
             if (i > 0) sb.Append(',');
+            string raw = string.IsNullOrEmpty(m.Name) ? m.Dev : m.Name;
             sb.Append("{\"uid\":").Append(m.Uid)
-              .Append(",\"name\":\"").Append(Json(string.IsNullOrEmpty(m.Name) ? m.Dev : m.Name)).Append("\"")
+              .Append(",\"name\":\"").Append(Json(Config.ScreenName(m.Uid.ToString(), raw))).Append("\"")
+              .Append(",\"raw\":\"").Append(Json(raw)).Append("\"")
               .Append(",\"dev\":\"").Append(Json(m.Dev)).Append("\"")
               .Append(",\"act\":").Append(m.Active ? "true" : "false")
               .Append(",\"clone\":").Append(m.Clone ? "true" : "false")
@@ -505,7 +889,7 @@ static class Program
             {
                 string how;
                 bool ok = Disp.SetActive(tid, true, out how);
-                Console.WriteLine("[auto-wake] tid=" + tid + " " + (ok ? "已接回 " : "接回失败 ") + how);
+                Log("[auto-wake] tid=" + tid + " " + (ok ? "已接回 " : "接回失败 ") + how);
                 Broadcast("{\"e\":\"mons\"}");
             }
             catch { }
@@ -533,9 +917,9 @@ static class Program
                 {
                     string rh;
                     bool ok = Disp.Rescue(tid, out rh);
-                    Console.WriteLine("[ddc-auto] tid=" + tid + " 面板不应答，重插线 " + (ok ? "成功 " : "失败 ") + rh);
+                    Log("[ddc-auto] tid=" + tid + " 面板不应答，重插线 " + (ok ? "成功 " : "失败 ") + rh);
                 }
-                else Console.WriteLine("[ddc-auto] tid=" + tid + " DDC 已叫醒");
+                else Log("[ddc-auto] tid=" + tid + " DDC 已叫醒");
                 Broadcast("{\"e\":\"mons\"}");
             }
             catch { }
@@ -550,7 +934,7 @@ static class Program
 
     // ---------- 谁在控制这台电脑 ----------
     // 没设令牌时局域网里任何设备都能动你的鼠标键盘，所以至少要让电脑上看得见"现在有几台、是哪几台、刚才在干什么"。
-    class Peer { public string Ip = ""; public long First = 0; public long Last = 0; public int Cmds = 0; public string LastCmd = ""; public int Sse = 0; }
+    internal class Peer { public string Ip = ""; public long First = 0; public long Last = 0; public int Cmds = 0; public string LastCmd = ""; public int Sse = 0; }
     static readonly Dictionary<string, Peer> Peers = new Dictionary<string, Peer>();
     static string[] _myIps = null;
 
@@ -588,7 +972,7 @@ static class Program
         }
         if (fresh)
         {
-            Console.WriteLine("[新设备] " + ip + " 开始控制这台电脑，外部设备共 " + total + " 台" +
+            Log("[新设备] " + ip + " 开始控制这台电脑，外部设备共 " + total + " 台" +
                 (Token.Length > 0 ? "（已设令牌）" : "（无令牌：它现在能动你的鼠标键盘）"));
             Broadcast(PeersJson());
         }
@@ -603,9 +987,11 @@ static class Program
             Peer p;
             if (!Peers.TryGetValue(ip, out p))
             {
-                p = new Peer(); p.Ip = ip; p.First = DateTime.Now.Ticks; Peers[ip] = p;
+                p = new Peer(); p.Ip = ip; p.First = DateTime.Now.Ticks;
+                p.Last = p.First;                      // 不写这行的话 Last=0，ago 会算出负数（int 溢出）
+                Peers[ip] = p;
                 if (!IsMine(ip))
-                    Console.WriteLine("[新设备] " + ip + " 打开了页面，外部设备共 " + ExternalCount() + " 台" +
+                    Log("[新设备] " + ip + " 打开了页面，外部设备共 " + ExternalCount() + " 台" +
                         (Token.Length > 0 ? "（已设令牌）" : "（无令牌：它现在能动你的鼠标键盘）"));
             }
             p.Sse += delta;
@@ -625,9 +1011,13 @@ static class Program
         {
             var p = arr[i];
             if (i > 0) sb.Append(',');
+            long ago = (DateTime.Now.Ticks - p.Last) / TimeSpan.TicksPerSecond;
+            long up = (DateTime.Now.Ticks - p.First) / TimeSpan.TicksPerSecond;
+            if (ago < 0) ago = 0; if (ago > 31536000) ago = 31536000;      // 别把溢出/负数甩到界面上
+            if (up < 0) up = 0; if (up > 31536000) up = 31536000;
             sb.Append("{\"ip\":\"").Append(Json(p.Ip)).Append("\"")
-              .Append(",\"ago\":").Append((int)((DateTime.Now.Ticks - p.Last) / TimeSpan.TicksPerSecond))
-              .Append(",\"secs\":").Append((int)((DateTime.Now.Ticks - p.First) / TimeSpan.TicksPerSecond))
+              .Append(",\"ago\":").Append(ago)
+              .Append(",\"secs\":").Append(up)
               .Append(",\"cmds\":").Append(p.Cmds)
               .Append(",\"last\":\"").Append(Json(p.LastCmd)).Append("\"")
               .Append(",\"live\":").Append(p.Sse > 0 ? "true" : "false")
@@ -649,9 +1039,13 @@ static class Program
         lock (ClientsLock) { online = Clients.Count; }
         var sb = new StringBuilder();
         sb.Append("{\"port\":").Append(Port)
+          .Append(",\"name\":\"").Append(Json(Config.NameOrMachine())).Append("\"")
           .Append(",\"token\":\"").Append(Json(Token ?? "")).Append("\"")
           .Append(",\"online\":").Append(online)
           .Append(",\"devs\":").Append(ExternalCount())
+          .Append(",\"autoSec\":").Append(Config.AutoWakeSec)
+          .Append(",\"ddcOff\":").Append(Config.AllowDdcOff ? "true" : "false")
+          .Append(",\"https\":").Append(Cert != null ? "true" : "false")
           .Append(",\"peers\":").Append(PeersListJson())
           .Append(",\"ips\":[");
         var ips = LocalIPv4();
@@ -680,6 +1074,7 @@ static class Program
         return sb.ToString();
     }
 
+    static string LastLockWhy = "";
     static void WatchWindow()
     {
         while (true)
@@ -692,10 +1087,145 @@ static class Program
                     LastWin = t;
                     Broadcast("{\"e\":\"win\",\"t\":\"" + Json(t) + "\"}");
                 }
+                // UAC 弹出来的那一刻就推到手机上，不用等他试着点一下才发现"点不动"；
+                // 点掉了也推一下，手机那条红条才不会赖着不走。
+                string w = W32.LockWhy();
+                if (w != LastLockWhy)
+                {
+                    LastLockWhy = w;
+                    if (w.Length > 0) { LastLockedNote = 0; NoteLocked(); }
+                    else Broadcast("{\"e\":\"unlock\"}");
+                }
+                Mates.Tick();       // 心跳到点就往外喊一声（自己排期，没到点什么都不做）
             }
             catch { }
             Thread.Sleep(700);
         }
+    }
+
+    // 手柄看门狗：只有真的有人按着键时才干活，所以平时一圈就是查一下表长没长，
+    // 120ms 一次也够把"手机没了 → 键卡住"的窗口压在心跳窗口之内。
+    static void HoldWatch()
+    {
+        while (true)
+        {
+            try { if (Held.HeldCount() > 0) Held.Sweep(); } catch { }
+            Thread.Sleep(120);
+        }
+    }
+
+    // ---------- 多机 ----------
+    // 广播被挡（跨网段、AP 隔离、有些交换机干脆不转 255.255.255.255）时的兜底：
+    // 往本机所在 /24 的每个地址**单播**发一次"你是谁"，等一秒看谁答。
+    // 比 TCP 扫端口准（只有 bedremote 会回这个包，别的东西端口开着也不该被它写配置），也不会弹防火墙框。
+    internal static string MatesScan()
+    {
+        int n = 0;
+        foreach (var baseIp in LocalIPv4())
+        {
+            int dot = baseIp.LastIndexOf('.');
+            if (dot < 0) continue;
+            string pre = baseIp.Substring(0, dot + 1);
+            for (int i = 1; i <= 254; i++)
+            {
+                string ip = pre + i;
+                if (ip == baseIp) continue;
+                try { Mates.Poke(new IPEndPoint(IPAddress.Parse(ip), Mates.DPort)); n++; } catch { }
+            }
+        }
+        Thread.Sleep(1300);
+        Log("[发现] 单播问了 " + n + " 个地址，名单上现在有 " + (Mates.Count() + 1) + " 台");
+        return Mates.ListJson();
+    }
+
+    // 「摆一次，推给多台」：把我们这份 panels POST 给同伴的 /panel/save。
+    // 目标必须是发现名单里的地址（IsKnown），不能是调用方随手给的一个 URL ——
+    // 否则这条命令就成了"拿本机令牌去写陌生服务器"。写的是对方的 panels 一个键，别的配置不动。
+    static string PushPanels(string to, string from)
+    {
+        if (string.IsNullOrEmpty(to)) return "err:没给目标";
+        string body = Config.PanelsJson();
+        var done = new List<string>();
+        int n = 0;
+        foreach (var raw in to.Split(','))
+        {
+            string t = raw.Trim();
+            if (t.Length == 0) continue;
+            if (t == "*" || t.Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var j in Mates.ListJson().Split('{'))
+                {
+                    int e = j.IndexOf('}');
+                    if (e <= 0) continue;
+                    string seg = j.Substring(0, e);
+                    string ip = FieldIn(seg, "ip"), port = FieldIn(seg, "port");
+                    if (ip.Length == 0 || port.Length == 0) continue;
+                    if (FieldIn(seg, "self") == "true") continue;
+                    done.Add(ip + ":" + port);
+                }
+                continue;
+            }
+            done.Add(t);
+        }
+        if (done.Count > 32) done = done.GetRange(0, 32);
+        var sb = new StringBuilder();
+        foreach (var t in done)
+        {
+            int colon = t.LastIndexOf(':');
+            string ip = colon > 0 ? t.Substring(0, colon) : t;
+            int port = Port;
+            if (colon > 0) int.TryParse(t.Substring(colon + 1), out port);
+            if (port <= 0) port = Port;
+            if (!Mates.IsKnown(ip, port)) { sb.Append(t).Append("=不在发现名单里;"); continue; }
+            string res = PushOne(ip, port, body);
+            sb.Append(t).Append('=').Append(res).Append(';');
+            Log("[推面板] " + ip + ":" + port + " → " + res + "  <- " + (from ?? "?"));
+            n++;
+        }
+        return n == 0 ? "err:没有可推的目标（先 c=scan 找一找）" : "pushed:" + sb;
+    }
+
+    static string FieldIn(string seg, string key)
+    {
+        string k = "\"" + key + "\":";
+        int i = seg.IndexOf(k, StringComparison.Ordinal);
+        if (i < 0) return "";
+        i += k.Length;
+        bool q = seg[i] == '"';
+        if (q) i++;
+        int j = i;
+        while (j < seg.Length && (q ? seg[j] != '"' : (char.IsDigit(seg[j]) || seg[j] == '-' || seg[j] == 't' || seg[j] == 'r' || seg[j] == 'u' || seg[j] == 'e'))) j++;
+        return seg.Substring(i, j - i);
+    }
+
+    static string PushOne(string ip, int port, string panelsJson)
+    {
+        try
+        {
+            // 走 http：我们的服务在同一端口上 peek 首字节分流，明文一样能收 ——
+            // 这样就不用在 outbound 上处理自签证书（也不去动全局的证书校验）。
+            string url = "http://" + ip + ":" + port + "/panel/save" + (Token.Length > 0 ? "?t=" + Uri.EscapeDataString(Token) : "");
+            var req = (HttpWebRequest)WebRequest.Create(url);
+            req.Method = "POST";
+            req.ContentType = "application/json; charset=utf-8";
+            req.Timeout = 1800;
+            req.ReadWriteTimeout = 1800;
+            byte[] b = Encoding.UTF8.GetBytes(panelsJson);
+            req.ContentLength = b.Length;
+            using (var st = req.GetRequestStream()) st.Write(b, 0, b.Length);
+            using (var rp = req.GetResponse())
+            using (var rd = new StreamReader(rp.GetResponseStream(), Encoding.UTF8))
+            {
+                string txt = rd.ReadToEnd();
+                return txt.IndexOf("\"ok\":true") >= 0 ? "ok" : "resp:" + txt;
+            }
+        }
+        catch (WebException ex)
+        {
+            try { if (ex.Response != null) ex.Response.Close(); } catch { }
+            return "fail:" + ex.Status;
+        }
+        catch (Exception ex) { return "fail:" + ex.Message; }
     }
 
     static string RandomToken()
@@ -707,7 +1237,7 @@ static class Program
         return sb.ToString();
     }
 
-    static List<string> LocalIPv4()
+    internal static List<string> LocalIPv4()
     {
         var outList = new List<string>();
         try
@@ -729,12 +1259,15 @@ static class Program
         public string Remote;
     }
 
-    static void Handle(TcpClient c)
+    static void Handle(TcpClient c, System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
     {
         try
         {
             c.NoDelay = true;
-            var s = c.GetStream();
+            // 同一个端口：peek 一个字节决定这条是 https 还是 http。握手失败就默默关掉，
+            // 不上报 —— 端口扫描器和探测请求也走这条路，报了对人没用。
+            var s = Tls.Upgrade(c, cert);
+            if (s == null) { try { c.Close(); } catch { } return; }
             var br = new BufferedStream(s, 8192);
 
             string line = ReadLine(br);
@@ -788,7 +1321,7 @@ static class Program
                 if (local || tk == Token)
                 {
                     Broadcast("{\"e\":\"msg\",\"t\":\"" + Json(txt) + "\"}");
-                    Console.WriteLine("[notify] " + txt);
+                    Log("[notify] " + txt);
                     Write(s, 200, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("ok"), r);
                 }
                 else Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403\n"), r);
@@ -821,6 +1354,48 @@ static class Program
                     Write(s, 200, ct, File.ReadAllBytes(fp), r);
                 }
                 else Write(s, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("404 " + rel + "\n"), r);
+                c.Close(); return;
+            }
+
+            // PWA / 安卓分享面板 / 根证书下载。
+            // 这几个都得能被浏览器直接拿到（注册 SW、取图标、装 CA 的时候手机还没信任这个地址），
+            // 所以只有 manifest 和 /share 在设了令牌时要验一下 —— 里面本来就没有秘密。
+            if (r.Path == "/sw.js" || r.Path == "/icon-192.png" || r.Path == "/icon-512.png")
+            {
+                string fp = Path.Combine(WwwDir, r.Path.Substring(1).Replace('/', Path.DirectorySeparatorChar));
+                if (!File.Exists(fp)) { Write(s, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("404\n"), r); c.Close(); return; }
+                string ct = r.Path.EndsWith(".js") ? "application/javascript; charset=utf-8" : "image/png";
+                Write(s, 200, ct, File.ReadAllBytes(fp), r);
+                c.Close(); return;
+            }
+            if (r.Path == "/ca.crt" || r.Path == "/ca.pem")
+            {
+                byte[] pem = Tls.CaPem(DataDir);
+                if (pem == null)
+                {
+                    Write(s, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes(
+                        "现在是自签模式，没有根证书。想装成 App / 用安卓分享面板，就把 bedremote.json 里的 \"ca\" 改成 true 再重启。\n"), r);
+                    c.Close(); return;
+                }
+                Write(s, 200, "application/x-x509-ca-cert", pem, r);
+                c.Close(); return;
+            }
+            if (r.Path == "/manifest.webmanifest")
+            {
+                bool okM = Authed(r) || r.Remote == "127.0.0.1" || r.Remote == "::1" || r.Remote == "";
+                if (!okM) { Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403 需要令牌\n"), r); c.Close(); return; }
+                Write(s, 200, "application/manifest+json; charset=utf-8", Encoding.UTF8.GetBytes(ManifestJson()), r);
+                c.Close(); return;
+            }
+            if (r.Path == "/share")
+            {
+                bool okS = Authed(r) || r.Remote == "127.0.0.1" || r.Remote == "::1" || r.Remote == "";
+                if (!okS) { Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403 需要令牌\n"), r); c.Close(); return; }
+                string u = PickSharedUrl(G(r, "url", ""), G(r, "text", ""), G(r, "title", ""));
+                string what = u.Length == 0 ? "分享过来的三段文本里没找到 http 链接" : OpenUrl(u, r.Remote);
+                Log("[share] " + what + "  <- " + r.Remote);
+                Redirect(s, "/?shared=" + Uri.EscapeDataString(what.Length > 70 ? what.Substring(0, 70) : what)
+                                  + (Token.Length > 0 ? "&t=" + Uri.EscapeDataString(Token) : ""));
                 c.Close(); return;
             }
 
@@ -876,7 +1451,23 @@ static class Program
                         if (Config.SavePanels(r.Body ?? "{}", out err))
                         {
                             Broadcast("{\"e\":\"panel\"}");
-                            Console.WriteLine("[panel] 已保存");
+                            Log("[panel] 已保存");
+                            Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes("{\"ok\":true}"), r);
+                        }
+                        else Write(s, 400, "application/json; charset=utf-8",
+                            Encoding.UTF8.GetBytes("{\"ok\":false,\"err\":\"" + Json(err) + "\"}"), r);
+                        break;
+                    }
+                case "/gamepad":
+                    Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(Config.GamepadJson()), r);
+                    break;
+                case "/gamepad/save":
+                    {
+                        // 手机用表单发（j=...），curl 直接甩一段 JSON 当 body 也认
+                        string err;
+                        if (Config.SaveGamepad(G(r, "j", r.Body ?? "{}"), out err))
+                        {
+                            Log("[手柄] 布局已保存：" + (r.Remote ?? "?"));
                             Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes("{\"ok\":true}"), r);
                         }
                         else Write(s, 400, "application/json; charset=utf-8",
@@ -907,7 +1498,9 @@ static class Program
                         sb.Append("\"virtn\":\"").Append(v.Left).Append(",").Append(v.Top).Append(",").Append(v.Right).Append(",").Append(v.Bottom).Append("\",");
                         sb.Append("\"win\":\"").Append(Json(W32.ForegroundTitle())).Append("\",");
                         sb.Append("\"locked\":").Append(W32.LockedNow() ? "true" : "false").Append(",");
+                        sb.Append("\"lockWhy\":\"").Append(Json(W32.LockWhy())).Append("\",");
                         sb.Append("\"awake\":").Append(Awake ? "true" : "false").Append(",");
+                        sb.Append("\"name\":\"").Append(Json(Config.NameOrMachine())).Append("\",");
                         sb.Append("\"up\":").Append((int)((DateTime.Now.Ticks - Started) / TimeSpan.TicksPerSecond)).Append(",");
                         // 配置健康状况：以前解析失败是静默退回内置默认，没人看得出来
                         sb.Append("\"cfg\":").Append(Config.Loaded ? "true" : "false").Append(",");
@@ -981,7 +1574,7 @@ static class Program
         s.Flush();
     }
 
-    static void ServeSse(NetworkStream s, Req r)
+    static void ServeSse(Stream s, Req r)
     {
         byte[] hb = Encoding.ASCII.GetBytes(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n" +
@@ -996,6 +1589,7 @@ static class Program
         try
         {
             byte[] hi = Encoding.UTF8.GetBytes("data: " + HelloJson() + "\n\n" +
+                "data: {\"e\":\"ver\",\"t\":\"" + Json(Version) + "\"}\n\n" +
                 "data: {\"e\":\"win\",\"t\":\"" + Json(W32.ForegroundTitle()) + "\"}\n\n");
             s.Write(hi, 0, hi.Length); s.Flush();
             while (!cli.Dead)
@@ -1026,7 +1620,7 @@ static class Program
         }
     }
 
-    static string Json(string s)
+    internal static string Json(string s)
     {
         if (s == null) return "";
         var sb = new StringBuilder();
@@ -1056,7 +1650,7 @@ static class Program
         LastReply = "";
         while (ReplyEvt.WaitOne(0)) { }
         Broadcast("{\"e\":\"ask\",\"t\":\"" + Json(text) + "\"}");
-        Console.WriteLine("[ask] " + text);
+        Log("[ask] " + text);
         if (!ReplyEvt.WaitOne(timeoutSec * 1000)) return "";
         return LastReply ?? "";
     }
@@ -1069,14 +1663,14 @@ static class Program
         {
             case "move": case "abs": case "btn": case "wheel": case "key":
             case "combo": case "text": case "paste": case "screen": case "run":
-            case "power": return true;
+            case "power": case "open": case "frame": case "release": return true;
         }
         return false;
     }
 
     static long LastLockedNote = 0;
 
-    static bool InputAllowed()
+    internal static bool InputAllowed()
     {
         return !Config.DenyWhenLocked || !W32.LockedNow();
     }
@@ -1084,17 +1678,186 @@ static class Program
     static void NoteLocked()
     {
         long now = DateTime.Now.Ticks;
-        if (now - LastLockedNote < TimeSpan.TicksPerSecond * 5) return;
+        if (now - LastLockedNote < TimeSpan.TicksPerSecond * 4) return;
         LastLockedNote = now;
-        Broadcast("{\"e\":\"locked\",\"t\":\"电脑在锁屏或安全桌面上，注入会被系统丢掉，先去解锁\"}");
-        Console.WriteLine("[locked] 输入被系统挡住（锁屏或安全桌面）");
+        string why = W32.LockWhy();
+        Broadcast("{\"e\":\"locked\",\"t\":\"" + Json(LockMsg(why)) + "\",\"why\":\"" + Json(why) + "\"}");
+        Log("[locked:" + (why.Length == 0 ? "?" : why) + "] 输入被系统挡住");
     }
 
-    static void Dispatch(NetworkStream s, Req r)
+    // 锁屏和 UAC 得分开说：给错建议等于让人对着屏幕发呆。
+    static string LockMsg(string why)
+    {
+        if (why != "uac") return "电脑在锁屏或安全桌面上，注入会被系统丢掉：先把它解锁。";
+        return "电脑正在等你点「管理员身份运行」的 是/否。那个确认框是高权限窗口，"
+             + "我们这个普通权限进程往里送输入会被 Windows 直接丢掉 —— 手机上点不动不是卡了。"
+             + "要么去电脑前点掉；要么以后把 bedremote 以管理员身份跑（界面里有按钮），那样这类程序连弹窗都不会有。";
+    }
+
+    // 「丢到电脑」的公共实现：手机页的 c=open 和安卓分享面板的 /share 都走这一个。
+    // 远程可触发，所以输入收得很窄：只认 http/https 完整链接、限长、不许空格/引号/管道
+    // （file:、\服务器\共享、javascript: 全进不来）。每一次打开都写日志 + 回推一条提示到手机上。
+    static string OpenUrl(string raw, string from)
+    {
+        string u = (raw ?? "").Trim();
+        if (!Config.AllowOpen) { Log("[丢到电脑] 被配置挡掉：" + u); return "denied：配置里 allowOpen=false（想用手机开链接就把它改成 true）"; }
+        if (u.Length == 0) return "没有链接";
+        if (u.Length > 2000) return "链接太长（>2000 字符）";
+        bool good = (u.StartsWith("http://") || u.StartsWith("https://")) && u.Length >= 12 && !HasBadChar(u);
+        if (!good) { Log("[丢到电脑] 拒绝：" + u); return "只接受 http:// 或 https:// 开头、不含空格和引号的完整链接"; }
+        try { Process.Start(new ProcessStartInfo(u) { UseShellExecute = true }); }
+        catch (Exception ex) { Log("[丢到电脑] 打不开：" + ex.Message); return "打不开：" + ex.Message; }
+        Log("[丢到电脑] " + u + "  <- " + from);
+        string show = u.Length > 80 ? u.Substring(0, 80) + "…" : u;
+        Broadcast("{\"e\":\"msg\",\"t\":\"电脑已打开：" + Json(show) + "\"}");
+        return "opened";
+    }
+
+    // 这条 run 条目被点名要走通行证吗（大小写无所谓，白名单本来就是忽略大小写的）
+    static bool IsElev(string name)
+    {
+        for (int i = 0; i < Config.ElevatedRun.Count; i++)
+            if (string.Equals(Config.ElevatedRun[i], name, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    // 跑一条白名单命令。**只接受配置里写好的名字**，绝不接受手机传来的命令行。
+    // 被点名要通行证、而且证办好了 → 走计划任务（以管理员身份起来，不弹框）；
+    // 否则照普通方式跑 —— 该弹 UAC 还是会弹，但我们会把"这条还没办证"一起推到手机上，
+    // 让他知道下次回电脑点一下，以后就不弹了。
+    static string DoRun(string name, string from)
+    {
+        string cmdline;
+        if (!Config.Run.TryGetValue(name, out cmdline) || string.IsNullOrEmpty(cmdline))
+        {
+            // 光回一个 "denied" 等于让人对着墙猜：把收到的名字、白名单条数、
+            // 以及配置文件有没有解析失败一起说出来。
+            string d = "denied：白名单里没有[" + name + "]，当前已加载 " + Config.Run.Count + " 条" +
+                       (Config.Error != null ? "；而且配置文件解析失败（已退回内置默认）：" + Config.Error : "");
+            Log("[run] " + d);
+            return d;
+        }
+        if (IsElev(name))
+        {
+            var ps = Passes.All(DataDir, Config.ElevatedRun);
+            for (int i = 0; i < ps.Count; i++)
+            {
+                if (!string.Equals(ps[i].Name, name, StringComparison.OrdinalIgnoreCase)) continue;
+                if (ps[i].Registered && !ps[i].Stale)
+                {
+                    string how;
+                    if (Passes.Trigger(ps[i].Task, out how))
+                    {
+                        Log("[run] " + name + " -> 通行证 " + ps[i].Task + "  <- " + from);
+                        return "ran-elev:" + name;
+                    }
+                    Log("[run] 通行证启动失败（" + how + "），落回普通方式");
+                    break;
+                }
+                string note = ps[i].Stale
+                    ? "这条的通行证过时了（命令改过）：回电脑上点一次「重新办证」"
+                    : "这条还没办通行证，所以刚才那下大概弹了管理员确认框（手机点不动它）。回电脑点一次「办通行证」，以后就不弹了。";
+                Log("[run] " + note);
+                Broadcast("{\"e\":\"msg\",\"t\":\"" + Json(note) + "\"}");
+                break;
+            }
+        }
+        try
+        {
+            var psi = new ProcessStartInfo("cmd.exe", "/c " + cmdline)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            Process.Start(psi);
+            Log("[run] " + name + " -> " + cmdline);
+            return "ran:" + name;
+        }
+        catch (Exception ex) { return "跑不了：" + ex.Message; }
+    }
+
+    // ---------- 通行证给界面用的接口 ----------
+    internal static bool RunCmd(string name, out string cmd) { return Config.Run.TryGetValue(name, out cmd); }
+    internal static string DataDirPath { get { return DataDir; } }
+    internal static List<string> ElevatedNames { get { return Config.ElevatedRun; } }
+    internal static List<Passes.Pass> PassList() { return Passes.All(DataDir, Config.ElevatedRun); }
+    internal static string PassIssue() { string e = Passes.Issue(DataDir, Config.ElevatedRun, Log); return e == null ? "" : e; }
+    internal static string PassRevoke() { string e = Passes.Revoke(DataDir, Config.ElevatedRun, Log); return e == null ? "" : e; }
+
+    // 链接里不许出现的东西：空白/控制字符、引号、反斜杠、反引号、shell 元字符。
+    // 正常 URL 一个都不该有（真要出现就该是 %XX 编码过的），所以这一条同时挡住了
+    // file: 路径、UNC 共享、和任何"看起来像命令行"的输入。
+    static bool HasBadChar(string s)
+    {
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c <= ' ' || c == '"' || c == '\'' || c == '\\' || c == '`' ||
+                c == '&' || c == ';' || c == '|' || c == '<' || c == '>' || c == '$') return true;
+        }
+        return false;
+    }
+
+    // 安卓分享面板递过来的是 title / text / url 三段，各家 App 填得不一样：
+    // 浏览器一般填 url+text，B 站、抖音这类常把链接混在 text 的一句话里。所以谁像链接用谁。
+    static string PickSharedUrl(string url, string text, string title)
+    {
+        string[] cand = new string[] { url, text, title };
+        for (int i = 0; i < cand.Length; i++)
+        {
+            string s = cand[i] ?? "";
+            int k = s.IndexOf("http", StringComparison.Ordinal);
+            while (k >= 0)
+            {
+                int e = k;
+                while (e < s.Length && " \t\r\n\"'<>()（）【】[]".IndexOf(s[e]) < 0) e++;
+                string piece = s.Substring(k, e - k).TrimEnd('。', '，', ',', ')', '）', '】', ']', '!', '?', '？', '！', ':', '：', '.');
+                if ((piece.StartsWith("http://") || piece.StartsWith("https://")) && piece.Length >= 12) return piece;
+                k = s.IndexOf("http", k + 4, StringComparison.Ordinal);
+            }
+        }
+        return "";
+    }
+
+    // PWA 清单。代码生成而不是放一个静态文件，是因为要把令牌写进 start_url 和分享动作里 ——
+    // 分享面板打开的是个全新的窗口，没人会再手动把 ?t= 带上。
+    static string ManifestJson()
+    {
+        string tk = Token.Length > 0 ? "?t=" + Uri.EscapeDataString(Token) : "";
+        var sb = new StringBuilder();
+        sb.Append('{');
+        sb.Append("\"name\":\"bedremote 床上遥控\",");
+        sb.Append("\"short_name\":\"bedremote\",");
+        sb.Append("\"start_url\":\"/").Append(tk).Append("\",");
+        sb.Append("\"scope\":\"/\",");
+        sb.Append("\"display\":\"standalone\",");
+        sb.Append("\"orientation\":\"any\",");
+        sb.Append("\"background_color\":\"#14161a\",\"theme_color\":\"#14161a\",");
+        sb.Append("\"icons\":[{\"src\":\"/icon-192.png\",\"sizes\":\"192x192\",\"type\":\"image/png\"},");
+        sb.Append("{\"src\":\"/icon-512.png\",\"sizes\":\"512x512\",\"type\":\"image/png\"}],");
+        sb.Append("\"share_target\":{\"action\":\"/share").Append(tk).Append("\",\"method\":\"GET\",");
+        sb.Append("\"params\":{\"title\":\"title\",\"text\":\"text\",\"url\":\"url\"}}");
+        sb.Append('}');
+        return sb.ToString();
+    }
+
+    static void Redirect(Stream s, string loc)
+    {
+        byte[] hb = Encoding.ASCII.GetBytes("HTTP/1.1 302 Found\r\nLocation: " + loc +
+            "\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+        s.Write(hb, 0, hb.Length); s.Flush();
+    }
+
+    static void Dispatch(Stream s, Req r)
     {
         string c = G(r, "c", "");
         string ack = "1";
+        long inAt = DateTime.Now.Ticks;      // 这条指令进来之前的时刻，c=lag 要用它算"服务端花了多久"
         Touch(r.Remote, c);      // 记账：是哪台设备、什么时候、发了什么
+        // 凡是动显示的动作，先存一份刷新率，动完回读；掉速就自动用系统配置恢复。
+        bool disp = c == "blank" || c == "wake" || c == "rescue" || c == "primary" ||
+                    c == "only" || c == "cyclep" || c == "cycleo" || c == "undo";
+        var hzBefore = disp ? Disp.HzSnapshot() : null;
         // 触控板会连发 move，而"读当前坐标->算落点->绝对放置"必须是原子的，
         // 否则两个请求都读到同一个起点，就丢步了。
         lock (InputLock)
@@ -1131,11 +1894,23 @@ static class Program
                     }
                 case "wheel": W32.Wheel(GI(r, "d", 0), GI(r, "h", 0)); break;
 
+                // 手柄的一帧：谁发的就用谁的 IP 记账，锁屏/断心跳时只松它自己那一份。
+                case "frame":
+                    ack = Held.Frame(r.Remote ?? "?", G(r, "keys", ""), G(r, "mb", ""), GI(r, "dx", 0), GI(r, "dy", 0));
+                    break;
+                case "release":
+                    Held.Release(r.Remote ?? "?");
+                    ack = "released";
+                    break;
+
                 case "key":
                     {
                         string k = G(r, "k", "");
+                        string hd = G(r, "d", "tap");        // down/up 给手柄用；默认还是点一下
                         var kk = Keys.Get(k);
-                        if (kk != null) W32.TapVk(kk.Vk, kk.Ext);
+                        if (kk == null && k.Length == 1) { uint cvk; if (Keys.CharVk(k, out cvk)) kk = new Keys.K(cvk, false); }
+                        if (kk != null && (hd == "down" || hd == "up")) W32.Vk(kk.Vk, kk.Ext, hd == "up");
+                        else if (kk != null) W32.TapVk(kk.Vk, kk.Ext);
                         else if (k.Length == 1) W32.TypeUnicode(k);
                         break;
                     }
@@ -1237,7 +2012,7 @@ static class Program
                                     string rh;
                                     bool rok = Disp.Rescue(tid, out rh);
                                     how += "；面板不应答，已自动重插线：" + (rok ? "成功 " : "失败 ") + rh;
-                                    Console.WriteLine("[ddc] tid=" + tid + " 面板不应答，走重插线兜底");
+                                    Log("[ddc] tid=" + tid + " 面板不应答，走重插线兜底");
                                 }
                             }
                             if (ok && !on)
@@ -1250,10 +2025,21 @@ static class Program
                         else
                         {
                             ok = Disp.SetActive(tid, on, out how);
-                            if (ok && !on && sec > 0 && sec <= 3600) { ScheduleWake(tid, sec); how += "，将在 " + sec + " 秒后自动接回"; }
+                            if (ok && !on)
+                            {
+                                // 自动接回是**服务端**策略。客户端传来的 sec 不算数 ——
+                                // 手机页是缓存的旧版时会偷偷带 sec=20，害人以为"屏关不住"（实测踩到）。
+                                if (Config.AutoWakeSec > 0)
+                                {
+                                    ScheduleWake(tid, Config.AutoWakeSec);
+                                    how += "，按服务端设置 " + Config.AutoWakeSec + " 秒后自动接回";
+                                }
+                                else if (sec > 0)
+                                    how += "；客户端要求 " + sec + " 秒自动接回，但服务端策略是不自动接回（要改就动 bedremote.json 的 autoWakeSec）";
+                            }
                         }
                         ack = (ok ? (on ? "on:" : "off:") : "err:") + how;
-                        Console.WriteLine("[" + c + "] tid=" + tid + " -> " + ack);
+                        Log("[" + c + "] tid=" + tid + " -> " + ack);
                         Broadcast("{\"e\":\"mons\"}");
                         break;
                     }
@@ -1265,7 +2051,7 @@ static class Program
                         string how;
                         bool ok = Disp.SetPrimary(tid, out how);
                         ack = (ok ? "primary:" : "err:") + how;
-                        Console.WriteLine("[primary] tid=" + tid + " -> " + ack);
+                        Log("[primary] tid=" + tid + " -> " + ack);
                         Broadcast("{\"e\":\"mons\"}");
                         break;
                     }
@@ -1277,7 +2063,7 @@ static class Program
                         string how;
                         bool ok = Disp.OnlyThis(tid, out how);
                         ack = (ok ? "only:" : "err:") + how;
-                        Console.WriteLine("[only] tid=" + tid + " -> " + ack);
+                        Log("[only] tid=" + tid + " -> " + ack);
                         Broadcast("{\"e\":\"mons\"}");
                         break;
                     }
@@ -1287,7 +2073,28 @@ static class Program
                         string how;
                         bool ok = Disp.Cycle(c == "cycleo", out how);
                         ack = (ok ? "cycle:" : "err:") + how;
-                        Console.WriteLine("[" + c + "] -> " + ack);
+                        Log("[" + c + "] -> " + ack);
+                        Broadcast("{\"e\":\"mons\"}");
+                        break;
+                    }
+                case "fixhz":
+                    {
+                        // 只把亮着的屏拉回它该跑的刷新率，绝不碰拓扑/主屏/位置
+                        // （restore 会重排原点，掉速想单独修就用这个）
+                        Disp.FixRefreshOnly();
+                        ack = "fixhz:" + Disp.RatesNow();
+                        Log("[fixhz] -> " + ack);
+                        Broadcast("{\"e\":\"mons\"}");
+                        break;
+                    }
+                case "restore":
+                    {
+                        // 应急：恢复显示现场。先按系统数据库里存的配置，读不到就强制重新枚举模式
+                        // （这台机上 QDC_DATABASE_CURRENT 读不到，所以第二条才是主力）。
+                        string how;
+                        bool ok = Disp.Recover(out how);
+                        ack = (ok ? "restore:" : "err:") + how;
+                        Log("[restore] -> " + ack);
                         Broadcast("{\"e\":\"mons\"}");
                         break;
                     }
@@ -1297,7 +2104,7 @@ static class Program
                         string how;
                         bool ok = Disp.Undo(out how);
                         ack = (ok ? "undo:" : "err:") + how;
-                        Console.WriteLine("[undo] -> " + ack);
+                        Log("[undo] -> " + ack);
                         Broadcast("{\"e\":\"mons\"}");
                         break;
                     }
@@ -1309,11 +2116,57 @@ static class Program
                         string how;
                         bool ok = Disp.Rescue(tid, out how);
                         ack = (ok ? "rescued:" : "err:") + how;
-                        Console.WriteLine("[rescue] tid=" + tid + " -> " + ack);
+                        Log("[rescue] tid=" + tid + " -> " + ack);
                         Broadcast("{\"e\":\"mons\"}");
                         break;
                     }
                 case "awake": Awake = G(r, "on", "1") == "1"; W32.KeepAwake(Awake); break;
+
+                // ---- 多机：名单 / 改名 / 扫一段 / 把面板推给同伴 ----
+                case "mates": ack = Mates.ListJson(); break;
+                case "scan": ack = MatesScan(); break;
+                case "name":
+                    {
+                        string err;
+                        string n = G(r, "n", "").Trim();
+                        if (Config.SetName(n, out err))
+                        {
+                            Log("[改名] 这台电脑现在叫「" + Config.NameOrMachine() + "」  <- " + (r.Remote ?? "?"));
+                            Broadcast("{\"e\":\"name\",\"t\":\"" + Json(Config.NameOrMachine()) + "\"}");
+                            ack = "name:" + Config.NameOrMachine();
+                        }
+                        else ack = "err:" + err;
+                        break;
+                    }
+                case "srename":
+                    {
+                        string err;
+                        long uid;
+                        if (!long.TryParse(G(r, "mt", ""), out uid)) { ack = "err:没给屏编号"; break; }
+                        string n = G(r, "n", "").Trim();
+                        if (Config.SetScreenName(uid.ToString(), n, out err))
+                        {
+                            Log("[改名] 屏 " + uid + " → 「" + (n.Length == 0 ? "（回到型号名）" : n) + "」  <- " + (r.Remote ?? "?"));
+                            Broadcast("{\"e\":\"mons\"}");
+                            ack = n.Length == 0 ? "cleared" : "ok";
+                        }
+                        else ack = "err:" + err;
+                        break;
+                    }
+                case "push": ack = PushPanels(G(r, "to", ""), r.Remote); break;
+
+                // 延迟探针：手机发一个自己的时间戳过来，我们原样退回（走 SSE 那条长连接）。
+                // 手机用同一个时钟算"发出去→回到手机"，所以不需要两边对表。
+                // 这条路和 c=frame 走的是同一条（HTTP 上行 → 这里分发 → SSE 下行），
+                // 量出来的就是"我按下到电脑知道"的那一段，不含屏幕刷新。
+                case "lag":
+                    {
+                        double srv = (DateTime.Now.Ticks - inAt) / (double)TimeSpan.TicksPerMillisecond;
+                        Broadcast("{\"e\":\"lag\",\"t0\":\"" + Json(G(r, "t0", "")) + "\",\"srv\":"
+                                  + srv.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "}");
+                        ack = "lag";
+                        break;
+                    }
                 case "notify": Broadcast("{\"e\":\"msg\",\"t\":\"" + Json(G(r, "s", "")) + "\"}"); break;
                 case "mon": Broadcast(HelloJson()); break;
                 case "reply":
@@ -1322,40 +2175,27 @@ static class Program
                         try { File.WriteAllText(Path.Combine(DataDir, "last_reply.txt"), t); } catch { }
                         LastReply = t;
                         Broadcast("{\"e\":\"reply\",\"t\":\"" + Json(t) + "\"}");
-                        Console.WriteLine("[reply] " + t);
+                        Log("[reply] " + t);
                         ReplyEvt.Set();
                         break;
                     }
-                case "run":
-                    {
-                        // 只允许跑 bedremote.json 里 run 段白名单写好的命令名，
-                        // 绝不接受手机传来的任意命令行。
-                        string name = G(r, "n", "");
-                        string cmdline;
-                        if (!Config.Run.TryGetValue(name, out cmdline) || string.IsNullOrEmpty(cmdline))
-                        {
-                            // 光回一个 "denied" 等于让人对着墙猜：把收到的名字、白名单条数、
-                            // 以及配置文件有没有解析失败一起说出来。
-                            ack = "denied：白名单里没有[" + name + "]，当前已加载 " + Config.Run.Count + " 条" +
-                                  (Config.Error != null ? "；而且配置文件解析失败（已退回内置默认）：" + Config.Error : "");
-                            Console.WriteLine("[run] " + ack);
-                            break;
-                        }
-                        var psi = new ProcessStartInfo("cmd.exe", "/c " + cmdline)
-                        {
-                            UseShellExecute = false,
-                            CreateNoWindow = true
-                        };
-                        Process.Start(psi);
-                        ack = "ran:" + name;
-                        Console.WriteLine("[run] " + name + " -> " + cmdline);
-                        break;
-                    }
-                case "reset": Broadcast("{\"e\":\"reset\"}"); break;
+                case "run": ack = DoRun(G(r, "n", ""), r.Remote); break;
+                case "open":
+                    ack = OpenUrl(G(r, "u", ""), r.Remote);
+                    break;
                 default: break;
             }
         }
         catch (Exception ex) { ack = "err:" + ex.Message; }
+        if (disp && ack.IndexOf("err:") != 0)
+        {
+            try
+            {
+                string g = Disp.GuardHz(hzBefore);
+                if (g.Length > 0) { ack += " | " + g; Log("[hz-guard] " + g); }
+            }
+            catch { }
+        }
         }
         Write(s, 200, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes(ack), r);
     }

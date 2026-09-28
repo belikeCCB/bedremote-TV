@@ -29,6 +29,7 @@ static class Disp
     const uint SDC_APPLY = 0x80;
     const uint SDC_SAVE_TO_DATABASE = 0x200;
     const uint SDC_ALLOW_CHANGES = 0x400;
+    const uint SDC_FORCE_MODE_ENUMERATION = 0x1000;
     const uint SDC_TOPOLOGY_EXTEND = 0x4;
 
     const int GET_SOURCE_NAME = 1, GET_TARGET_NAME = 2;
@@ -147,6 +148,9 @@ static class Disp
     }
 
     static List<Mon> _cache;
+    // 每块屏"亮着时用的是哪个 source"。接回时必须还给它原来的源，
+    // 否则挑了别的空闲源会连带把主屏换人（实测：床上安排下接回电脑屏，主屏被抢回去了）。
+    static readonly Dictionary<uint, uint> _lastSrc = new Dictionary<uint, uint>();
     static DateTime _cacheAt = DateTime.MinValue;
 
     public static string TechName(uint t)
@@ -253,6 +257,7 @@ static class Disp
                 byUid[uid] = m; list.Add(m);
             }
             if (!act || m.Active) continue;      // 有活跃 path 就够了，别被后面的非活跃 path 覆盖
+            _lastSrc[uid] = p.sourceInfo.id;     // 记住它亮着时占哪个源，接回时好还给它（源号决定谁是主屏）
 
             m.Active = true;
             m.Tech = p.targetInfo.outputTechnology;
@@ -340,8 +345,194 @@ static class Disp
             SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_APPLY | SDC_ALLOW_CHANGES) == 0;
     }
 
+    /// <summary>
+    /// 把 Windows 数据库里存的那套显示配置原样应用回去（恢复现场用）。
+    /// 我们所有动作都故意不带 SDC_SAVE_TO_DATABASE，所以数据库里一直是用户自己在
+    /// 显示设置里调好的那一套 —— 出问题就 apply 它。
+    /// </summary>
+    public static bool RestoreDb(out string how)
+    {
+        how = "";
+        PATH_INFO[] p; MODE_INFO[] m; uint n, nm;
+        if (!Query(QDC_DATABASE_CURRENT, out p, out n, out m, out nm))
+        {
+            // 别把失败原因咽下去：这台机上 QDC_DATABASE_CURRENT 一直读不到，
+            // 早期代码静默跳过它，导致"按原布局恢复"从来没生效过，唤醒总是走备用路。
+            uint bn = 0, bm = 0;
+            int bs = GetDisplayConfigBufferSizes(QDC_DATABASE_CURRENT, out bn, out bm);
+            how = "读不到已保存的显示配置（bufferSizes err=" + bs + " paths=" + bn + " modes=" + bm + "）";
+            return false;
+        }
+        var active = ActivePaths(p, n);
+        if (active.Count == 0) { how = "数据库里没有任何激活的显示路径，不敢应用"; return false; }
+        int e;
+        if (Apply(active, m, nm, out e)) { how = "已按系统保存的配置恢复（" + active.Count + " 条路径）"; return true; }
+        how = "恢复失败 err=" + e;
+        return false;
+    }
+
+    /// <summary>只把每块活跃屏的刷新率拉回它该跑的那档，**完全不碰拓扑**。</summary>
+    public static void FixRefreshOnly()
+    {
+        foreach (var m in All(true))
+        {
+            if (!m.Active || m.Dev.Length == 0) continue;
+            string c;
+            SetBestRefresh(m.Uid, out c);
+        }
+        _cache = null; _cacheAt = DateTime.MinValue;
+    }
+
+    // 恢复现场的统一入口：先按数据库配置，读不到就强制重新枚举模式；
+    // 然后不管前面成没成，都把每块活跃屏拉回"同分辨率下最高刷新率"——
+    // 因为改位置时我把主屏从 180Hz 掉到 60Hz，而上面两条路都没能把它找回来。
+    public static bool Recover(out string how)
+    {
+        var sb = new StringBuilder();
+        string a, b;
+        bool ok = RestoreDb(out a);
+        if (ok) sb.Append(a);
+        else
+        {
+            ok = ReforceModes(out b);
+            sb.Append("数据库配置读不到（").Append(a).Append("），改用强制重枚举：").Append(b);
+        }
+        foreach (var m in All(true))
+        {
+            if (!m.Active || m.Dev.Length == 0) continue;
+            string c;
+            SetBestRefresh(m.Uid, out c);
+            sb.Append(" ｜ ").Append(c);
+        }
+        how = sb.ToString();
+        return ok;
+    }
+
+    /// <summary>
+    /// 强制重新枚举模式并扩展桌面 —— 让驱动自己挑每块屏的最佳模式。
+    /// 刷新率被弄丢（实测 180→60Hz）时用这个，比读数据库可靠。
+    /// </summary>
+    public static bool ReforceModes(out string how)
+    {
+        how = "";
+        uint np = 0, nm = 0;
+        int e0 = GetDisplayConfigBufferSizes(QDC_ALL_PATHS, out np, out nm);
+        PATH_INFO[] p = null; MODE_INFO[] m = null;
+        uint n = 0, nmx = 0;
+        if (e0 == 0 && np > 0) { p = new PATH_INFO[np]; m = new MODE_INFO[nm == 0 ? 1 : nm]; n = np; nmx = nm; }
+        int e;
+        if (p != null && QueryDisplayConfig(QDC_ALL_PATHS, ref n, p, ref nmx, m, IntPtr.Zero) == 0)
+        {
+            // 只重排"当前已经活跃"的那些屏。
+            // 绝对不要用 SDC_TOPOLOGY_EXTEND 兜底 —— 那会把用户刚刚亲手关掉的屏又点亮，
+            // 表现就是"根本关不上，过一会儿自己亮"。想点亮某块屏只有 wake/only 该干。
+            var act = ActivePaths(p, n);
+            if (act.Count > 0)
+            {
+                if (Apply(act, m, nmx, out e)) { how = "已带强制模式重枚举应用当前配置（不新增屏）"; return true; }
+                how = "重枚举失败 err=" + e;
+                return false;
+            }
+        }
+        how = "没有可重应用的活跃显示路径";
+        return false;
+    }
+
+    // 摘掉"当前主屏"之后，剩下那块屏的坐标可能不再从 (0,0) 开始，
+    // 而 SetDisplayConfig 要求桌面原点合法，否则直接 ERROR_INVALID_PARAMETER(87) —— 实测踩过。
+    // 做法：把剩下的活跃屏整体平移，让包围盒重新从 (0,0) 起，相对位置保持不变。
+    static MODE_INFO[] NormalizeOrigin(List<PATH_INFO> active, MODE_INFO[] modes, uint nm)
+    {
+        int minX = int.MaxValue, minY = int.MaxValue;
+        for (int i = 0; i < active.Count; i++)
+        {
+            int mi = SourceModeIndexOf(modes, nm, active[i]);
+            if (mi < 0) continue;
+            if ((int)modes[mi].posX < minX) minX = modes[mi].posX;
+            if ((int)modes[mi].posY < minY) minY = modes[mi].posY;
+        }
+        if (minX == int.MaxValue || (minX == 0 && minY == 0)) return modes;
+        var m2 = (MODE_INFO[])modes.Clone();
+        for (int i = 0; i < active.Count; i++)
+        {
+            int mi = SourceModeIndexOf(m2, nm, active[i]);
+            if (mi < 0) continue;
+            m2[mi].posX -= minX; m2[mi].posY -= minY;
+        }
+        return m2;
+    }
+
+    // 刷新率守卫：动之前记住每块屏的 hz，动之后如果有屏掉速，立刻用数据库配置恢复。
+    // 我自己的 SetPrimary 就把主屏从 180Hz 弄成过 60Hz —— 返回值成功、状态却坏了，必须回读。
+    // 每块屏"最后一次亮着时的刷新率"。唤醒的屏在动手前是灭的，没有 before 基线，
+    // 所以要靠这个历史值判断"接回来之后掉速了"（实测：唤醒电脑屏后 180 → 60Hz）。
+    static readonly Dictionary<uint, uint> _lastHz = new Dictionary<uint, uint>();
+
+    public static Dictionary<uint, uint> HzSnapshot()
+    {
+        var d = new Dictionary<uint, uint>();
+        foreach (var m in All(true))
+        {
+            if (!m.Active || m.HzDen == 0) continue;
+            uint hz = m.HzNum / m.HzDen;
+            d[m.Uid] = hz;
+            _lastHz[m.Uid] = hz;                    // 顺手更新历史基线
+        }
+        return d;
+    }
+
+    public static string RatesNow()
+    {
+        var sb = new StringBuilder();
+        foreach (var m in All(true))
+        {
+            if (!m.Active) continue;
+            if (sb.Length > 0) sb.Append(" ");
+            sb.Append(m.Name).Append('=').Append(m.HzDen == 0 ? "?" : (m.HzNum / m.HzDen).ToString()).Append("Hz");
+        }
+        return sb.Length == 0 ? "没有亮着的屏" : sb.ToString();
+    }
+
+    public static string GuardHz(Dictionary<uint, uint> before)
+    {
+        if (before == null) before = new Dictionary<uint, uint>();
+        var dropped = new List<string>();
+        foreach (var m in All(true))
+        {
+            if (!m.Active || m.HzDen == 0) continue;         // 关掉的屏不算掉速
+            uint was;
+            if (before.TryGetValue(m.Uid, out was))
+            {
+                uint hist;
+                if (_lastHz.TryGetValue(m.Uid, out hist) && hist > was) was = hist;   // 用历史基线兜底
+            }
+            else if (!_lastHz.TryGetValue(m.Uid, out was)) continue;                  // 完全没见过这块屏
+            uint now = m.HzNum / m.HzDen;
+            if (now + 1 < was) dropped.Add(m.Name + " " + was + "→" + now + "Hz");
+        }
+        if (dropped.Count == 0) return "";
+        // 只用"改刷新率"这条路补，绝对不要在这里调 Recover/重枚举 ——
+        // 那种操作会重排桌面原点，把用户刚刚设好的主屏又偷偷换掉（我实测犯过）。
+        FixRefreshOnly();
+        var after = new List<string>();
+        foreach (var m in All(true))
+        {
+            if (!m.Active || m.HzDen == 0) continue;
+            uint was;
+            if (before.TryGetValue(m.Uid, out was) && was > 0) after.Add(m.Name + "=" + (m.HzNum / m.HzDen) + "Hz");
+        }
+        return "【检测到掉速并已只修刷新率（不动拓扑）】" + string.Join("、", dropped.ToArray())
+               + " → 现在 " + string.Join(" ", after.ToArray());
+    }
+
     /// <summary>on=false 摘掉这块屏（真无信号）；on=true 接回来（唤醒）。how 说明走的哪条路。</summary>
     public static bool SetActive(uint uid, bool on, out string how)
+    {
+        return SetActive(uid, on, out how, false);
+    }
+
+    // allowLast = 明知它是最后一块亮着的屏还要断（只有 Rescue 用：摘掉是为了 1.2 秒后立刻接回）
+    public static bool SetActive(uint uid, bool on, out string how, bool allowLast)
     {
         how = "";
         PATH_INFO[] paths; MODE_INFO[] modes; uint n, nm;
@@ -380,14 +571,25 @@ static class Disp
         if (!on)
         {
             if (mine.Count == 0) { how = "本来就是无信号状态"; return true; }
+            // 最后一条护栏：这是当前唯一在驱动的屏，断了它就一块屏都不剩 ——
+            // 那时手机上的「唤醒」按钮谁也看不见，人只能起身拔线。宁可拒绝。
+            // （真想黑屏用 c=power，那个动一下鼠标就回来。）
+            if (!allowLast && others.Count == 0)
+            {
+                how = "这是当前唯一亮着的屏，断了就没有任何输出，也就再也点不到「唤醒这块屏」了。" +
+                      "只想黑一下用「黑屏一下」（动鼠标就回来）；想多一块屏，先按「唤醒这块屏」把别的屏接回来。";
+                return false;
+            }
             // 尝试一：留在配置里但清掉 ACTIVE 位（官方推荐的"连着但不驱动"表达）
             // 尝试二：干脆整条移出配置
+            // 两条都用"平移后原点合法"的 mode 表，否则摘掉当前主屏会直接吃 87
+            var nmodes = NormalizeOrigin(others, modes, nm);
             var tryA = new List<PATH_INFO>(others);
             foreach (var p in mine) { var q = p; q.flags &= ~PATH_ACTIVE; tryA.Add(q); }
             int ea = -1, eb = -1;
             string det;
-            if (Apply(tryA, modes, nm, out ea) && Verify(uid, false, out det)) { how = "已摘掉"; return true; }
-            if (Apply(others, modes, nm, out eb) && Verify(uid, false, out det)) { how = "已摘掉(移出配置)"; return true; }
+            if (Apply(tryA, nmodes, nm, out ea) && Verify(uid, false, out det)) { how = "已摘掉"; return true; }
+            if (Apply(others, nmodes, nm, out eb) && Verify(uid, false, out det)) { how = "已摘掉(移出配置)"; return true; }
             // 两个都没成：把原来的活跃配置放回去，别留个半死不活的显示状态
             var back = new List<PATH_INFO>(others);
             back.AddRange(mine);
@@ -427,9 +629,14 @@ static class Disp
             else edb = -2;
         }
 
-        // 候选里挑"source 没被别的活跃屏占用"的（占用 = 会变克隆），逐个试
+        // 候选：先试"这块屏上次亮着时用的那个源"（保住主屏归属），再试其它空闲源。
+        // 无论如何都跳过"已被别的活跃屏占用"的源 —— 占用会变成克隆。
         int last = 0;
-        foreach (var c in cands)
+        uint wantSrc = 0; bool haveSrc = _lastSrc.TryGetValue(uid, out wantSrc);
+        var ordered = new List<PATH_INFO>();
+        if (haveSrc) foreach (var c in cands) if (c.sourceInfo.id == wantSrc) ordered.Add(c);
+        foreach (var c in cands) if (!haveSrc || c.sourceInfo.id != wantSrc) ordered.Add(c);
+        foreach (var c in ordered)
         {
             int cnt; usedSrc.TryGetValue(SrcKey(c), out cnt);
             if (cnt > 0) continue;
@@ -440,7 +647,7 @@ static class Disp
             if (Apply(l, modes, nm, out e))
             {
                 string det;
-                if (Verify(uid, true, out det)) { how = "已接回(空源 src" + c.sourceInfo.id + ")"; return true; }
+                if (Verify(uid, true, out det)) { how = "已接回(src" + c.sourceInfo.id + (c.sourceInfo.id == wantSrc ? "，还给它原来的源" : "，原源被占改用空源") + ")"; return true; }
             }
             last = e;
         }
@@ -650,6 +857,111 @@ static class Disp
         return ok;
     }
 
+    // 经典 GDI 模式设置：EnumDisplaySettingsEx + ChangeDisplaySettingsEx。
+    // 数据库配置和强制重枚举都没能把刷新率找回来的时候（实测就是这样），只有这条路是直接了当的。
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DEVMODE
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+        public uint dmFields;
+        public int dmPositionX, dmPositionY;
+        public uint dmDisplayOrientation, dmDisplayFixedOutput;
+        public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public short dmLogPixels;
+        public uint dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+        public uint dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+    }
+
+    const uint ENUM_CURRENT_SETTINGS = 0xFFFFFFFF;
+    const uint ENUM_REGISTRY_SETTINGS = 0xFFFFFFFE;
+    const uint DM_PELSWIDTH = 0x80000, DM_PELSHEIGHT = 0x100000, DM_DISPLAYFREQUENCY = 0x400000;
+    const uint DM_POSITION = 0x200000;
+    const uint CDS_UPDATEREGISTRY = 1, CDS_TEST = 2, CDS_SET_PRIMARY = 0x10;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern bool EnumDisplaySettingsEx(string devName, uint modeNum, ref DEVMODE devMode, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int ChangeDisplaySettingsEx(string devName, ref DEVMODE devMode, IntPtr hwnd, uint flags, IntPtr param);
+
+    /// <summary>把某块屏设回"同分辨率下能选到的最高刷新率"。顺带把这台屏到底有哪些档位说出来。</summary>
+    public static bool SetBestRefresh(uint uid, out string how)
+    {
+        how = "";
+        var m = Find(uid);
+        if (m == null || !m.Active || m.Dev.Length == 0)
+        {
+            how = "这块屏当前无信号，设不了模式";
+            return false;
+        }
+        var cur = new DEVMODE(); cur.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+        if (!EnumDisplaySettingsEx(m.Dev, ENUM_CURRENT_SETTINGS, ref cur, 0))
+        {
+            how = "读不到 " + m.Dev + " 的当前模式";
+            return false;
+        }
+        int w = (int)cur.dmPelsWidth, h = (int)cur.dmPelsHeight;
+        uint nowHz = cur.dmDisplayFrequency;
+
+        // 枚举这块屏支持的所有模式，找同分辨率下最高的刷新率
+        uint best = nowHz;
+        var seen = new List<uint>();
+        var modes = new DEVMODE(); modes.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+        for (uint i = 0; i < 400; i++)
+        {
+            if (!EnumDisplaySettingsEx(m.Dev, i, ref modes, 0)) break;
+            if ((int)modes.dmPelsWidth != w || (int)modes.dmPelsHeight != h) continue;
+            uint f = modes.dmDisplayFrequency;
+            if (f < 6 || f > 1000) continue;                    // 0/75 之类是"未指定"，跳过
+            bool dup = false;
+            for (int k = 0; k < seen.Count; k++) if (seen[k] == f) { dup = true; break; }
+            if (!dup) seen.Add(f);
+            if (f > best) best = f;
+        }
+        seen.Sort();
+        if (best <= nowHz)
+        {
+            how = m.Dev + " 现在 " + nowHz + "Hz，已经是同分辨率(" + w + "x" + h + ")能选到的最高档；可选档：" + JoinHz(seen);
+            return nowHz >= 60;
+        }
+        var dm = cur;
+        dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_POSITION;
+        dm.dmPelsWidth = (uint)w; dm.dmPelsHeight = (uint)h; dm.dmDisplayFrequency = best;
+        // 必须把位置一起写上：不带 DM_POSITION 时 Windows 会自己重排桌面，
+        // 结果"只想修个刷新率"却把主屏换人了（实测：电视主屏 → 修完变成电脑屏主屏）。
+        dm.dmPositionX = m.Left; dm.dmPositionY = m.Top;
+        uint flags = CDS_UPDATEREGISTRY;
+        if (m.Primary) flags |= CDS_SET_PRIMARY;          // 它是主屏就明确声明，别让系统重新裁决谁是 (0,0)
+        int t = ChangeDisplaySettingsEx(m.Dev, ref dm, IntPtr.Zero, CDS_TEST | flags, IntPtr.Zero);
+        if (t != 0)
+        {
+            // 有些驱动不吃 CDS_SET_PRIMARY/位置组合，退一步只按老办法试一次，至少把刷新率救回来
+            var dm2 = cur;
+            dm2.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+            dm2.dmPelsWidth = (uint)w; dm2.dmPelsHeight = (uint)h; dm2.dmDisplayFrequency = best;
+            int t2 = ChangeDisplaySettingsEx(m.Dev, ref dm2, IntPtr.Zero, CDS_TEST, IntPtr.Zero);
+            if (t2 != 0) { how = "系统拒绝切到 " + best + "Hz（err=" + t + "/" + t2 + "）；可选档：" + JoinHz(seen); return false; }
+            int e2 = ChangeDisplaySettingsEx(m.Dev, ref dm2, IntPtr.Zero, 0, IntPtr.Zero);
+            _cache = null; _cacheAt = DateTime.MinValue;
+            how = e2 == 0 ? (m.Dev + " 已从 " + nowHz + "Hz 设回 " + best + "Hz（带位置写法被拒，退成不指定位置）；可选档：" + JoinHz(seen))
+                          : ("ChangeDisplaySettingsEx 失败 err=" + e2 + "；可选档：" + JoinHz(seen));
+            return e2 == 0;
+        }
+        int e = ChangeDisplaySettingsEx(m.Dev, ref dm, IntPtr.Zero, flags, IntPtr.Zero);
+        _cache = null; _cacheAt = DateTime.MinValue;                    // 让下一次回读拿到新值
+        how = e == 0 ? (m.Dev + " 已从 " + nowHz + "Hz 设回 " + best + "Hz；可选档：" + JoinHz(seen))
+                     : ("ChangeDisplaySettingsEx 失败 err=" + e + "；可选档：" + JoinHz(seen));
+        return e == 0;
+    }
+
+    static string JoinHz(List<uint> l)
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < l.Count; i++) { if (i > 0) sb.Append('/'); sb.Append(l[i]); }
+        return sb.Length == 0 ? "(没枚举到同分辨率的档位)" : sb.ToString();
+    }
+
     // ---------- DDC/CI ----------
 
     // 打开物理屏句柄干一件事，干完**一定**销毁。
@@ -755,7 +1067,7 @@ static class Disp
     public static bool Rescue(uint uid, out string how)
     {
         string h1, h2;
-        bool a = SetActive(uid, false, out h1);
+        bool a = SetActive(uid, false, out h1, true);   // 摘掉是为了 1.2 秒后接回，允许它是最后一块屏
         Thread.Sleep(1200);
         bool b = SetActive(uid, true, out h2);
         how = "摘掉" + (a ? "成功" : "失败") + " → 接回" + (b ? "成功" : "失败") + "（" + h2 + "）";

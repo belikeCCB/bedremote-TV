@@ -36,13 +36,19 @@ section{display:none}section.show{display:block}
 .grid{display:grid;gap:var(--gap)}
 .sect{font-size:11px;color:var(--dim);margin:14px 2px 6px;letter-spacing:.08em}
 .sect:first-child{margin-top:2px}
-#pad{position:relative;height:42dvh;min-height:190px;border-radius:16px;touch-action:none;overflow:hidden;
+/* ---- 触控板：笔记本那种布局 —— 键在上面一条，板子在下面占大头 ---- */
+#padkeys{display:grid;grid-template-columns:1fr 64px 1fr;gap:var(--gap);margin-bottom:var(--gap)}
+#padkeys button{min-height:58px}
+#padkeys .mid{border-radius:26px}
+#pad{position:relative;width:100%;height:calc(100dvh - 268px);min-height:210px;border-radius:16px;touch-action:none;overflow:hidden;
  background:radial-gradient(120% 120% at 50% 0%,#17171c,#0b0b0e);border:1px solid var(--line);
  display:flex;align-items:center;justify-content:center}
 #pad .hint{color:#3a3a44;font-size:13px;pointer-events:none;text-align:center}
-#prow{display:grid;grid-template-columns:repeat(5,1fr);gap:var(--gap);margin-top:var(--gap)}
-#speed{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px;color:var(--dim)}
-#speed input{flex:1;accent-color:var(--acc);height:30px}
+#pad.dragging{border-color:var(--warn);box-shadow:inset 0 0 0 1px var(--warn)}
+#pbar{display:flex;align-items:center;gap:6px;margin-top:var(--gap);font-size:12px;color:var(--dim)}
+#pbar input[type=range]{flex:1 1 auto;accent-color:var(--acc);height:30px;min-width:70px}
+#pbar button{min-height:32px;padding:0 9px;font-size:12px;border-radius:8px;flex:0 0 auto;flex-direction:row}
+#phelp{display:none}#phelp.on{display:block}
 .mod.stuck{background:#3a2b12;border-color:var(--warn);color:#fff}
 .in{background:var(--key);border:1px solid var(--line);border-radius:var(--r);color:var(--fg);
  font-size:16px;padding:0 12px;min-height:52px;outline:none;width:100%}
@@ -75,22 +81,117 @@ nav button.sel{background:#17171d;color:#fff;box-shadow:inset 0 2px 0 var(--acc)
 .note{font-size:11px;color:var(--dim);margin-top:10px;line-height:1.6}
 #lock{position:fixed;left:0;right:0;top:0;background:#5a2318;color:#ffd9d0;font-size:12px;
  padding:6px 10px;display:none;z-index:60}
+/* ---- 多台电脑：顶部这台叫什么 + 一键换一台的名单 ---- */
+#mname{color:var(--acc);font-weight:700;max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#mach{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;flex-direction:column;z-index:72;padding:14px;overflow:auto}
+#mach.on{display:flex}
+#machh{font-size:14px;color:#dcdce2;margin:6px 2px 10px;font-weight:700}
+.mi{display:flex;align-items:center;gap:8px;background:var(--key);border:1px solid var(--line);
+ border-radius:12px;padding:11px 12px;margin-bottom:8px;font-size:14px}
+.mi b{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mi.cur{border-color:var(--acc);background:#16324d}
+.mi .tm{flex:0 0 auto}
+.mi button{min-height:40px;padding:0 14px;background:var(--acc);color:#00203d;border:none;font-weight:700;font-size:13px;flex:0 0 auto}
+#machrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+#machrow button{min-height:40px;font-size:13px;flex:1 1 auto}
+#machrow .close{background:var(--key);border:1px solid var(--line);color:var(--fg);font-weight:400}
+/* 需要他做点什么的时候才出现的窄条：只说"缺什么 + 点哪个按钮"。
+   陀螺仪和"装成 App"都卡在安全上下文/证书这一格上，而这一格没法一键跳过（浏览器不给 API），
+   所以至少别让他自己诊断。 */
+#tip{display:none;flex:0 0 auto;position:relative;background:#1d2431;border-top:1px solid #2c3a4d;color:#cfe0f5;
+ font-size:12px;line-height:1.5;padding:7px 30px 7px 10px}
+#tip.on{display:block}
+#tip .x{position:absolute;right:6px;top:6px;min-height:26px;width:26px;padding:0;border-radius:7px;
+ background:transparent;border:1px solid #33455e;color:#9fb6d0;font-size:13px;line-height:1}
+#tip.on{display:block}
+#tip b{color:#fff}
+#tip .row2{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+#tip button{min-height:34px;padding:0 12px;font-size:12px;border-radius:8px;flex:0 0 auto;
+ background:#20304a;border-color:var(--acc)}
+#tip .note{margin-top:6px}
+/* ---- 手柄：画布铺满，控件按 0..1 比例摆；进这一页就沉浸全屏 ---- */
+#gp{position:relative;width:100%;height:calc(100dvh - 250px);min-height:300px;border-radius:16px;
+ touch-action:none;overflow:hidden;background:radial-gradient(120% 100% at 50% 0%,#131318,#08080a);
+ border:1px solid var(--line)}
+.gpw{position:absolute;touch-action:none;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;
+ font-size:13px;color:#c9c9d2;text-align:center;line-height:1.1;user-select:none}
+.gpbtn{background:rgba(38,38,46,.72);border:1px solid #3a3a44;border-radius:14px}
+.gpbtn.round{border-radius:50%}
+.gpbtn.on{background:#20304a;border-color:var(--acc);color:#fff}
+.gpstick{border:1px dashed #33333c;border-radius:50%;background:rgba(255,255,255,.02)}
+.gpstick .knob{position:absolute;left:50%;top:50%;width:46%;height:46%;margin:-23% 0 0 -23%;
+ border-radius:50%;background:rgba(77,163,255,.20);border:1px solid #35597d}
+.gplook{border:1px dashed #2b2b33;border-radius:14px;background:rgba(255,255,255,.015);color:#3a3a44;font-size:11px}
+.gpdpad{border:1px dashed #33333c;border-radius:14px;background:rgba(255,255,255,.02)}
+.gpdpad .dirc{flex:0 0 50%;font-size:12px;color:#6b6b76}
+.gpedit .gpw{outline:1px dashed var(--warn);outline-offset:-1px}
+.gpedit .gpw.sel{outline:2px solid var(--acc);outline-offset:-2px}
+/* 右上角那个半透明把手：平时淡到几乎看不见，点它才出菜单 */
+#gphud{position:fixed;right:10px;top:calc(env(safe-area-inset-top) + 8px);z-index:45;width:40px;height:40px;
+ min-height:40px;padding:0;border-radius:20px;background:rgba(24,24,29,.42);border:1px solid #2c2c33;
+ color:#7f7f8a;font-size:17px;opacity:.5}
+#gptb{display:none;position:fixed;left:0;right:0;bottom:0;z-index:46;background:rgba(14,14,17,.97);
+ border-top:1px solid var(--line);padding:10px 10px calc(env(safe-area-inset-bottom) + 10px);
+ gap:6px;align-items:center;font-size:12px;color:var(--dim);flex-wrap:wrap}
+#gptb.on{display:flex}
+#gptb button{min-height:40px;padding:0 11px;font-size:12px;border-radius:9px;flex:0 0 auto}
+/* 预设那一行：占满一行，名字做成小胶囊 */
+#gpprow{flex:1 1 100%;display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+ padding-bottom:6px;border-bottom:1px solid var(--line);margin-bottom:4px}
+#gpprof{display:flex;gap:6px;flex-wrap:wrap;flex:1 1 auto}
+#gpprof .pf{min-height:32px;padding:0 12px;border-radius:16px;font-size:13px;background:var(--key);
+ border:1px solid var(--line);color:var(--dim)}
+#gpprof .pf.on{background:#20304a;border-color:var(--acc);color:#fff;font-weight:700}
+#gpprow button{min-height:32px;font-size:12px;padding:0 9px;flex:0 0 auto}
+#gplag{flex:1 1 150px;font-size:11px;color:var(--ok)}
+#gpst{flex:1 1 130px;font-size:11px;color:var(--dim)}
+/* 属性面板：编辑时选中控件从底部滑出，一次改完所有字段（不再一层层弹 prompt） */
+#gpp{display:none;position:fixed;left:0;right:0;bottom:0;z-index:47;background:#111216;border-top:1px solid var(--acc);
+ padding:8px 10px calc(env(safe-area-inset-bottom) + 8px);max-height:58dvh;overflow:auto}
+#gpp.on{display:block}
+#gpph{font-size:11px;color:var(--acc);margin-bottom:6px;letter-spacing:.06em}
+#gppg{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px}
+#gpp label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim)}
+#gpp label.ck{grid-column:1/-1}
+#gpp input,#gpp select{flex:1 1 auto;min-width:0;background:var(--key);border:1px solid var(--line);color:var(--fg);
+ border-radius:7px;min-height:36px;padding:0 8px;font-size:14px}
+#gpp input.k4{width:54px;flex:0 0 54px}
+#gpp input[type=range]{padding:0;accent-color:var(--acc)}
+#gpp .grab{flex:0 0 auto;min-height:36px;font-size:12px;padding:0 9px;background:var(--key2);
+ border:1px solid var(--line);color:var(--fg);border-radius:7px}
+#gpp .grab.on{background:#3a2b12;border-color:var(--warn);color:#fff}
+#gppb{display:flex;gap:8px;margin-top:8px}
+#gppb button{flex:1 1 0;min-height:42px;font-size:13px}
+#gppb #pOk{background:var(--acc);color:#00203d;border-color:var(--acc);font-weight:700}
+/* 沉浸：上面那条状态栏、下面那排页签、还有提示条，操控时一律不许挡手 */
+body.gpf #bar,body.gpf #nav,body.gpf #tip{display:none}
+body.gpf{padding:0}
+body.gpf main{padding:4px;height:100dvh;overflow:hidden}
+body.gpf section.show{height:100%}
+body.gpf #gp{height:100%;border:none;border-radius:0}
 </style>
 </head>
 <body>
 <div id="lock"></div>
-<div id="bar"><span id="dot"></span><span id="rtt">—</span><span id="devs"></span><span id="win">连接中…</span>
+<div id="bar"><span id="dot"></span><span id="rtt">—</span><span id="mname"></span><button id="swb">换一台</button><span id="devs"></span><span id="win">连接中…</span>
  <button id="fsb">⛶</button><button id="qrb">加设备</button><button id="editb">改按钮</button></div>
 <main id="main"></main>
+<div id="tip"></div>
 <nav id="nav"></nav>
 <div id="off"><div id="offmsg">连不上电脑</div><button onclick="location.reload()">重试</button></div>
 <div id="qr"><div id="qrbox"></div><div id="qrtxt"></div><button class="close" id="qrclose">关闭</button></div>
+<div id="mach"><div id="machh"></div><div id="machlist"></div>
+ <div id="machrow"><button id="mrename">改这台的名称</button><button id="mpush">把面板推给它们</button><button id="mrescan">重新找</button><button class="close" id="machclose">关闭</button></div>
+ <div class="note" id="machtip"></div></div>
 
 <script src="vendor/qrcode.js"></script>
 <script>
 (function(){
 "use strict";
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
+// 页面自己的版本号。服务端版本比它新就说明"你手里这个标签页是旧的"，自动刷一次。
+// 不加这个的话，我改了行为你却还在跑旧 JS，看起来就像"功能坏了/关不上"——今晚真的踩过。
+var BUILD="0.11.0";
 var $=function(s){return document.querySelector(s)};
 var main=$("#main"), nav=$("#nav");
 var buzz=function(m){try{navigator.vibrate&&navigator.vibrate(m||12)}catch(e){}};
@@ -132,16 +233,34 @@ function sse(){
     else if(d.e==="msg")addMsg(d.t,"");
     else if(d.e==="reply"){addMsg(d.t,"me");$("#okno").style.display="none"}
     else if(d.e==="ask"){addMsg(d.t,"ev");$("#okno").style.display="grid"}
-    else if(d.e==="locked")showLock(d.t);
+    else if(d.e==="locked")showLock(d.t,d.why==="uac");
+    else if(d.e==="unlock")hideLock();
     else if(d.e==="panel")loadPanel();
+    else if(d.e==="name")loadMates();          // 有人给这台电脑改了名，顶部那行跟着换
+    else if(d.e==="lag")gpLagGot(d.t0,+d.srv||0);
     else if(d.e==="mons")loadMons();
     else if(d.e==="peers")showPeers(d);
+    else if(d.e==="ver"){
+      // 服务端比这个标签页新 → 自己刷一次（sessionStorage 保证只刷一次，不会来回刷）
+      try{
+        if(d.t && d.t.indexOf(BUILD)!==0 && !sessionStorage.getItem("br_reload")){
+          sessionStorage.setItem("br_reload","1");
+          location.reload();
+        }
+      }catch(e){}
+    }
     else if(d.e==="reset")$("#log").innerHTML="";
   };
   es.onerror=function(){/* EventSource 自己会重连 */};
 }
-document.addEventListener("visibilitychange",function(){if(!document.hidden){sse();ping()}});
-function showLock(t){var e=$("#lock");e.textContent=t;e.style.display="block";clearTimeout(e._t);e._t=setTimeout(function(){e.style.display="none"},6000)}
+document.addEventListener("visibilitychange",function(){if(!document.hidden){sse();ping()}else if(TILT&&TILT.run){tiltStop()}});
+// 手机切后台/失焦时把"按住"状态清掉，否则回来会一直发位移（触控板踩过同一个坑）
+addEventListener("pagehide",function(){if(TILT)TILT.holding=false});
+addEventListener("blur",function(){if(TILT)TILT.holding=false});
+function showLock(t,keep){var e=$("#lock");e.textContent=t;e.style.display="block";clearTimeout(e._t);
+  // UAC 那种要人去点一下的，红条多留一会（20 秒），别一闪就没让人以为是自己手滑
+  e._t=setTimeout(function(){e.style.display="none"},keep?20000:9000)}
+function hideLock(){var e=$("#lock");if(e){clearTimeout(e._t);e.style.display="none"}}
 
 /* ---------- 动作 DSL ---------- */
 function fire(b){
@@ -177,6 +296,7 @@ function loadPanel(){
 function el(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
 
 function render(){
+  try{releaseBtn()}catch(e){}      // 重建 DOM 前先把左键松开，否则状态会和按钮对不上、甚至一直按着
   main.innerHTML="";nav.innerHTML="";
   var tabs=(panels&&panels.tabs)||[];
   var n=0;
@@ -199,6 +319,9 @@ function render(){
     main.appendChild(sec);nav.appendChild(navBtn(n++,tab.name||"?"));
   });
   main.appendChild(padSection());   nav.appendChild(navBtn(n++,"触控板"));
+  tiltTab=n; main.appendChild(tiltSection()); nav.appendChild(navBtn(n++,"陀螺仪"));
+  gpTab=n; main.appendChild(gpSection());    nav.appendChild(navBtn(n++,"手柄"));
+  main.appendChild(castSection());  nav.appendChild(navBtn(n++,"丢过去"));
   main.appendChild(typeSection());  nav.appendChild(navBtn(n++,"打字"));
   screenTab=n; main.appendChild(screenSection()); nav.appendChild(navBtn(n++,"屏幕"));
   main.appendChild(agentSection()); nav.appendChild(navBtn(n++,"Agent"));
@@ -219,39 +342,63 @@ function show(i){
   for(var k=0;k<ss.length;k++){ss[k].className=k===i?"show":"";if(ns[k])ns[k].className=k===i?"sel":""}
   if(i===ss.length-1){unseen=0;var b=$("#badge");if(b)b.style.display="none"}
   if(i===screenTab)loadMons();
+  // 切走就把倾斜循环停掉：不然人在"打字"页上，光标还在跟着手机歪
+  if(i!==tiltTab&&TILT.run) tiltStop();
+  // 手柄同理，而且它比倾斜更危险：切走时如果还有键"按住"，必须立刻叫电脑松手
+  if(i!==gpTab){ if(GP.timer) gpStop(); gpImm(false) }
+  else if(GP.root){ if(!GP.on) gpStart(); gpImm(true); gpLoop(); gpPlace(); gpLagStart() }
   try{localStorage.setItem("br_tab",i)}catch(e){}
 }
 
 /* ---------- 屏幕（按屏点名控制） ---------- */
-var mons=[],monsAuto=true,monsDdcOff=false,screenTab=-1;
+var mons=[],monsDdcOff=false,screenTab=-1,tiltTab=-1,gpTab=-1,SWOK=null;
+// 「自动接回」不再是手机上的开关：以前是客户端带 sec=20，手机页一旧就"关不住屏"（真实踩过）。
+// 现在由服务端 bedremote.json 的 autoWakeSec 决定，这里只显示它的值。
+var monsAutoSec=0;
 function screenSection(){
   var s=el("section");
   s.innerHTML='<div class="sect">显示器</div>'+
    '<div class="row"><button id="cyco" class="acc">轮换：只留下一块屏</button><button id="cycp">轮换：主屏给下一块</button></div>'+
+   '<div class="row"><button id="winDisp">Windows 显示设置</button><button id="winProj">Win+P 切屏面板</button></div>'+
    '<div id="monlist"></div>'+
-   '<div class="row"><button id="monauto" class="acc"></button><button id="monundo">撤销上一步</button><button id="monreload">刷新</button></div>'+
+   '<div class="row"><button id="monauto" class="acc"></button><button id="monfix">修刷新率</button><button id="monundo">撤销上一步</button><button id="monreload">刷新</button><button id="monrestore">恢复系统配置</button></div>'+
    '<div class="note">'+
    '「<b>只留这块屏</b>」= 一键：把它设成主屏，同时切断其他所有屏的信号。躺着看片、坐回桌前都是这一下。它现在是无信号状态也能按（会先叫醒它）。<br>'+
    '「设为主屏」= 只换主屏（任务栏、新窗口、全屏游戏的默认落点跟着走），一块屏都不关。<br>'+
    '「无信号」= 只切这一块，别的不管。桌面会重排，它上面的窗口挪到别的屏；接回来就恢复。<br>'+
+   '「自动接回」默认是<b>关</b>的：关着就一直关着，等你按唤醒。想要"怕忘了开回来"的保险可以自己打开，选择会记住。<br>'+
    '「重插线（救）」= 软件版拔插数据线（摘掉再立刻接回），哪块屏黑着叫不醒时用它救。<br>'+
    '「熄灭（不动布局）」默认禁用：有的面板软关之后连 DDC 都不应答，命令叫不醒、只能起身拔线，要开得在配置里改 <code>ddcOff</code>。<br>'+
-   '按错了就按「撤销上一步」，回到上一个显示配置。</div>';
+   '「Win+P 切屏面板」= 系统自己的 <b>电脑屏幕 / 复制 / 扩展 / 第二屏幕</b> 那一套（就是"只在某块屏上显示"）。<br>'+
+   '  这条路归 Windows 管，最不容易出怪事：选完之后另一块屏是真无信号，也不会被我们的自动接回弄回来。<br>'+
+   '  缺点：它是"整组切换"，多屏想精确点名还得用下面的按钮。面板弹在电脑屏幕上，用手机触控板点。<br>'+
+   '「恢复系统配置」= 把分辨率/刷新率/主屏/左右位置恢复成系统存的那一套（万一被弄乱了按它）。</div>';
   return s;
 }
 function buildScreenRefs(){
   var au=$("#monauto");
-  var paint=function(){au.textContent="自动接回："+(monsAuto?"开 (20 秒)":"关");au.className=monsAuto?"on acc":"acc"};
-  au.onclick=function(){buzz();monsAuto=!monsAuto;paint()};
-  paint();
+  window.paintAuto=function(){
+    if(!au)return;
+    au.textContent=monsAutoSec>0?("自动接回："+monsAutoSec+" 秒"):"自动接回：关（服务端策略）";
+    au.className=monsAutoSec>0?"on acc":"acc";
+  };
+  au.onclick=function(){buzz();alert("这个不再由手机决定。\n\n要改就在电脑上编辑 bedremote.json：\n  \"autoWakeSec\": 20   ← 关掉一块屏 N 秒后自动接回\n  \"autoWakeSec\": 0    ← 一直关着，等你按唤醒\n\n改完重启服务生效（stop.cmd 再 run-hidden.vbs）。\n\n为什么放到服务端：以前是手机页自己带 20 秒，手机开的是旧缓存页就永远'关不住屏'，排查半天。")};
+  if(window.paintAuto)paintAuto();
   $("#monreload").onclick=function(){buzz();loadMons()};
   $("#monundo").onclick=function(){buzz();send("c=undo");setTimeout(loadMons,4000)};
   $("#cycp").onclick=function(){buzz();send("c=cyclep");setTimeout(loadMons,4000)};
+  $("#monrestore").onclick=function(){buzz();if(confirm("把显示配置恢复成系统在显示设置里存的那一套（分辨率/刷新率/主屏/左右位置都会回到你原来调好的样子）。继续？")){send("c=restore");setTimeout(loadMons,5000)}};
+  // 系统自己的"只在 1 上显示 / 只在 2 上显示"，由 Windows 管着，最稳
+  $("#winDisp").onclick=function(){buzz();send("c=run&n="+encodeURIComponent("显示设置"))};
+  $("#winProj").onclick=function(){buzz();send("c=run&n="+encodeURIComponent("切屏面板"))};
+  // 只修刷新率，不动拓扑：接回/切主屏之后屏幕莫名变卡（180→60Hz）就按这个
+  $("#monfix").onclick=function(){buzz();send("c=fixhz");setTimeout(loadMons,3000)};
   $("#cyco").onclick=function(){buzz();if(confirm("只留一块屏：其余屏全部切断信号，任务栏/新窗口都会挪过去。按错了用「撤销上一步」。继续？")){send("c=cycleo");setTimeout(loadMons,6000)}};
 }
 function loadMons(){
   return api("c=mons").then(function(t){
-    try{var d=JSON.parse(t);mons=d.mons||[];monsDdcOff=!!d.ddcOff}catch(e){mons=[]}
+    try{var d=JSON.parse(t);mons=d.mons||[];monsDdcOff=!!d.ddcOff;monsAutoSec=+d.autoSec||0}catch(e){mons=[]}
+    if(window.paintAuto)paintAuto();
     paintMons();
   },function(){});
 }
@@ -275,6 +422,7 @@ function paintMons(){
     if(!m.act)h+='<button data-wake="'+m.uid+'" style="background:#16324d">唤醒</button>';
     if(m.clone)h+='<button data-wake="'+m.uid+'" style="background:#16324d">修克隆</button>';
     if(m.act&&!m.clone)h+='<button data-rescue="'+m.uid+'" style="border-color:var(--warn);color:var(--warn)">重插线(救)</button>';
+    h+='<button data-rename="'+m.uid+'" data-cur="'+mEsc(m.name)+'">改名</button>';
     h+='</div></div>';
   });
   box.innerHTML=h;
@@ -286,7 +434,7 @@ function paintMons(){
     if(d.jump!=null)return send("c=screen&n="+e(d.jump));
     if(d.blank!=null){
       if(d.prim==="1"&&!confirm("这是主屏：摘掉后桌面会重排、窗口会挪到别的屏。继续？"))return;
-      var q="c=blank&mt="+e(d.blank);if(monsAuto)q+="&sec=20";
+      var q="c=blank&mt="+e(d.blank);
       send(q);setTimeout(loadMons,2500);return;
     }
     if(d.ddc!=null){send("c=blank&mt="+e(d.ddc)+"&m=ddc");return}
@@ -295,36 +443,84 @@ function paintMons(){
       send("c=rescue&mt="+e(d.rescue));setTimeout(loadMons,5000);return;
     }
     if(d.wake!=null){send("c=wake&mt="+e(d.wake));setTimeout(loadMons,2500);return}
+    if(d.rename!=null){
+      var nm=prompt("给这块屏起个名字（比如「左边竖屏」「床头那台」）。留空 = 回到显示器自己的型号名。",d.cur||"");
+      if(nm===null)return;
+      send("c=srename&mt="+e(d.rename)+"&n="+e(nm));
+      setTimeout(loadMons,1200);return;
+    }
   };
 }
 
 /* ---------- 触控板 ---------- */
-var speed=1.4,absMode=false,dragging=false;
+var speed=1.4,absMode=false,dragging=false,holding=false,holdTO=0;
 try{var ls=localStorage.getItem("br_sp");if(ls){speed=+ls}}catch(e){}
+try{if(localStorage.getItem("br_abs")==="1")absMode=true}catch(e){}
+function btnDown(){return dragging||holding}
+function paintPadBtns(){
+  var d=$("#bDrag");if(d){d.textContent="拖拽:"+(dragging?"开":"关");d.classList.toggle("on",dragging)}
+  var a=$("#absMode");if(a){a.textContent="点哪跳哪:"+(absMode?"开":"关");a.classList.toggle("on",absMode)}
+  var h=$("#kLeft");if(h)h.classList.toggle("on",holding);
+  var p=$("#pad");if(p)p.classList.toggle("dragging",btnDown());
+  var tg=$("#dragtag");if(tg)tg.textContent=btnDown()?" · 左键按住中":"";
+}
+// 左键一定要保证能松开：拖到一半页面切后台/掉线，Windows 那边会一直"按着左键"，
+// 之后你点什么都变成拖拽，特别难缠。
+function releaseBtn(){
+  if(holdTO){clearTimeout(holdTO);holdTO=0}
+  if(!dragging&&!holding)return;
+  dragging=false;holding=false;
+  send("c=btn&b=left&d=up");paintPadBtns();
+}
 function padSection(){
   var s=el("section");
   s.innerHTML=
-   '<div id="pad"><div class="hint">手指在此滑动 = 移动光标<br>双指上下 = 滚轮</div></div>'+
-   '<div id="prow">'+
-   '<button data-b="left">点击<span class="sub">左键</span></button>'+
-   '<button data-b="right">右击</button><button data-b="mid">中键</button>'+
-   '<button data-b="left" data-d="dbl">双击</button><button id="bDrag">拖拽<span class="sub">关</span></button>'+
+   '<div id="padkeys">'+
+   '<button id="kLeft">左键<span class="sub">轻点=单击 · 长按=按住拖</span></button>'+
+   '<button id="kMid" class="mid">中</button>'+
+   '<button id="kRight">右键<span class="sub">连点两下=双击</span></button>'+
    '</div>'+
-   '<div id="speed"><span>慢</span><input type="range" id="sp" min="0.3" max="4" step="0.1"><span>快</span>'+
-   '<button id="absMode" style="min-height:34px;font-size:12px;padding:0 10px;flex-direction:row"></button></div>'+
-   '<div class="note">先把光标移到目标上再按"点击"，抬手抖动就不会点歪。'+
-   '开"点哪跳哪"后按下手指会把光标直接放到对应的桌面位置。</div>';
+   '<div id="pad"><div class="hint">手指在此滑动 = 移动光标<br>双指上下 = 滚轮<span id="dragtag"></span></div></div>'+
+   '<div id="pbar"><span>慢</span><input type="range" id="sp" min="0.3" max="4" step="0.1"><span>快</span>'+
+   '<button id="absMode"></button><button id="bDrag"></button><button id="bHelp">?</button></div>'+
+   '<div class="note" id="phelp">'+
+   '先把光标移到目标上再按"左键"，抬手抖动就不会点歪。<br>'+
+   '<b>拖进度条 / 选一段文字</b>：长按「左键」别松（约半秒后边框变橙、写着"左键按住中"），这期间左键一直是按下的，用另一根手指在板上滑；松开那根手指就抬起左键。<br>'+
+   '<b>双击</b>：连着轻点两下「左键」就是双击（跟笔记本一样）。<br>'+
+   '「拖拽」是开关式的：开之后每次摸板子都算按住左键，适合连续拖窗口。<br>'+
+   '开"点哪跳哪"后按下手指会把光标直接放到对应的桌面位置。拖拽中不会触发双指滚轮，免得又拖又滚。</div>';
   setTimeout(function(){wirePad(s)},0);
   return s;
 }
 function wirePad(s){
-  $("#sp").value=speed;$("#absMode").textContent="点哪跳哪："+(absMode?"开":"关");
+  $("#sp").value=speed;
   $("#sp").oninput=function(){speed=+this.value;try{localStorage.setItem("br_sp",speed)}catch(e){}};
-  $("#absMode").onclick=function(){absMode=!absMode;this.textContent="点哪跳哪："+(absMode?"开":"关");this.classList.toggle("on",absMode)};
-  $("#bDrag").onclick=function(){dragging=!dragging;this.querySelector(".sub").textContent=dragging?"开":"关";this.classList.toggle("on",dragging)};
-  s.querySelectorAll("#prow button").forEach(function(b){
-    b.onclick=function(){buzz();var d=b.dataset.d||"click";send("c=btn&b="+b.dataset.b+"&d="+d)};
+  $("#absMode").onclick=function(){absMode=!absMode;try{localStorage.setItem("br_abs",absMode?"1":"0")}catch(e){};buzz();paintPadBtns()};
+  $("#bDrag").onclick=function(){buzz();dragging=!dragging;if(!dragging&&holding){holding=false}if(dragging)send("c=btn&b=left&d=up");paintPadBtns()};
+  $("#bHelp").onclick=function(){buzz();$("#phelp").classList.toggle("on")};
+  // 左键：轻点=单击；按住 420ms 不松=进入"按住拖"（另一根手指在板上滑），抬起那根手指就松键。
+  // 判定放在 pointerup 而不是 pointerdown 之后延时 —— 延时发单击会有手感延迟，而"要不要转成按住"
+  // 只有定时器知道，所以抬手时按 lpHold 决定发 click 还是发 up。
+  var kl=$("#kLeft"),lpTO=0,lpHold=false,lpDown=false;
+  kl.addEventListener("pointerdown",function(e){
+    e.preventDefault();buzz();lpDown=true;lpHold=false;
+    if(lpTO)clearTimeout(lpTO);
+    lpTO=setTimeout(function(){lpTO=0;lpHold=true;holding=true;
+      send("c=btn&b=left&d=down");paintPadBtns();
+      if(holdTO)clearTimeout(holdTO);
+      holdTO=setTimeout(function(){holdTO=0;if(holding)releaseBtn()},15000)},420);
   });
+  function lift(){
+    if(!lpDown)return;lpDown=false;
+    if(lpTO){clearTimeout(lpTO);lpTO=0}
+    if(lpHold){lpHold=false;if(holding){holding=false;if(holdTO){clearTimeout(holdTO);holdTO=0}send("c=btn&b=left&d=up")}}
+    else send("c=btn&b=left&d=click");
+    paintPadBtns();
+  }
+  ["pointerup","pointercancel","pointerleave"].forEach(function(ev){kl.addEventListener(ev,lift)});
+  $("#kRight").onclick=function(){buzz();send("c=btn&b=right&d=click")};
+  $("#kMid").onclick=function(){buzz();send("c=btn&b=mid&d=click")};
+  paintPadBtns();
   var pad=$("#pad"),pts={},multi=false,my=0;
   pad.addEventListener("pointerdown",function(e){
     try{pad.setPointerCapture(e.pointerId)}catch(x){}
@@ -340,7 +536,7 @@ function wirePad(s){
   pad.addEventListener("pointermove",function(e){
     var p=pts[e.pointerId];if(!p)return;
     var dx=e.clientX-p.x,dy=e.clientY-p.y;p.x=e.clientX;p.y=e.clientY;
-    if(multi){var d=e.clientY-my;my=e.clientY;var l=Math.round(d/28);if(l)send("c=wheel&d="+(-l*120));return}
+    if(multi&&!btnDown()){var d=e.clientY-my;my=e.clientY;var l=Math.round(d/28);if(l)send("c=wheel&d="+(-l*120));return}
     if(!absMode)move(dx*speed,dy*speed);
     e.preventDefault();
   });
@@ -350,11 +546,880 @@ function wirePad(s){
   pad.addEventListener("pointerup",up);pad.addEventListener("pointercancel",up);
   pad.addEventListener("contextmenu",function(e){e.preventDefault()});
 }
-var accX=0,accY=0,tick=false;
-function move(dx,dy){accX+=dx;accY+=dy;if(!tick){tick=true;requestAnimationFrame(flush)}}
-function flush(){tick=false;if(!absMode&&(accX||accY)){
-  var dx=Math.round(accX),dy=Math.round(accY);accX-=dx;accY-=dy;
-  if(dx||dy)send("c=move&dx="+dx+"&dy="+dy)}}
+// 位移累积 + 30ms 合并发送：以前每帧一个请求（约 60/秒），撞上 inflight 上限就被丢掉，
+// 而丢掉的那段距离已经从累加器里扣掉了 —— 这就是"拖拽不跟手、拖一半停了"的根因。
+// 现在：合并成一步大步长发，而且**没发出去就还回累加器**，绝不丢位移。
+var accX=0,accY=0,mTimer=0;
+function move(dx,dy){accX+=dx;accY+=dy;if(!mTimer)mTimer=setTimeout(flush,30)}
+function flush(){
+  mTimer=0;
+  if(absMode)return;
+  var dx=Math.round(accX),dy=Math.round(accY);
+  if(!dx&&!dy)return;
+  accX-=dx;accY-=dy;
+  var t=send("c=move&dx="+dx+"&dy="+dy);
+  if(t&&t.then)t.then(function(x){if(x==="busy"||x==="err"){accX+=dx;accY+=dy}});
+}
+addEventListener("pagehide",releaseBtn);
+addEventListener("blur",releaseBtn);
+
+/* ---------- 丢到电脑 ---------- */
+// 手机上的浏览器拿不到别的 App 的地址栏，所以"交出链接"这一下只能人来做：
+// Chrome 里 分享 → 复制链接，回到这页粘上。电脑这边替掉的是"起身回工位打开它"那一下。
+var CAST_KEY="br.cast";
+function castHist(){ try{ return JSON.parse(localStorage.getItem(CAST_KEY)||"[]") }catch(e){ return [] } }
+function castPush(u){ var a=castHist(); a=a.filter(function(x){return x!==u}); a.unshift(u); if(a.length>8)a.length=8;
+  try{ localStorage.setItem(CAST_KEY,JSON.stringify(a)) }catch(e){} }
+function castLooksUrl(v){
+  if(/^https?:\/\/\S+$/i.test(v)) return v;
+  if(/^(www\.)?[^\s]+\.[a-z]{2,}(\/[^\s]*)?$/i.test(v)) return "https://"+v;
+  return null;
+}
+function castSend(v,btn){
+  v=(v||"").trim();
+  if(!v){ castMsg("先粘个链接，或者写你想搜什么"); return }
+  var u=castLooksUrl(v);
+  if(!u) u="https://www.bing.com/search?q="+encodeURIComponent(v);
+  send("c=open&u="+encodeURIComponent(u)).then(function(a){
+    if(a==="opened"){ buzz(30); castPush(u); renderCast(); if(btn){var t=btn.textContent;btn.textContent="已丢过去 ✓";setTimeout(function(){btn.textContent=t},1200)} castMsg("") }
+    else castMsg("电脑说："+a);
+  });
+}
+function castMsg(t){ var m=$("#castMsg"); if(!m) return; m.textContent=t||""; m.style.display=t?"block":"none" }
+function castSection(){
+  var s=el("section");
+  var h='<div class="sect">丢到电脑</div>';
+  h+='<div class="row"><input id="castIn" class="in" type="text" placeholder="粘贴链接，或输入要搜的字" autocomplete="off" spellcheck="false">'+
+     '<button id="castGo" style="flex:0 0 auto;padding:0 16px;background:var(--acc);color:#00203d;border:none;font-weight:700">丢过去</button></div>';
+  h+='<div id="castMsg" class="note" style="display:none;color:#ffb4a0"></div>';
+  h+='<div class="grid" style="grid-template-columns:repeat(3,1fr);margin-top:8px">'+
+     '<button id="castClip">读剪贴板<span class="sub">要 HTTPS</span></button>'+
+     '<button id="castUrl">只贴网址<span class="sub">不搜索</span></button>'+
+     '<button id="castClr">清空</button></div>';
+  h+='<div class="sect">最近丢过的（点一下再丢一次）</div><div id="castHistBox"></div>';
+  h+='<div class="note">手机浏览器拿不到别的 App 的地址栏，所以链接要你亲手交出来：'+
+     '在 Chrome 里点 <b>分享 → 复制链接</b>，回到这一页粘上，或者直接用下面「读剪贴板」。<br>'+
+     '写的东西不像链接，就当搜索词处理。<br>'+
+     '<b>想做到"任何 App 里点分享、电脑直接开"</b>：电脑上把 bedremote.json 里的 <code>ca</code> 勾成 true（界面里那个「用自建 CA 签」），'+
+     '手机浏览器打开 <code>http://电脑IP:端口/ca.crt</code> 下载并装上（设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书），'+
+     '然后用 https 地址进这页 → 菜单「添加到主屏幕」。装成 App 之后，安卓的分享面板里就会出现 bedremote，'+
+     '点它 → 链接直接在电脑上打开。<span id="pwaSt"></span></div>';
+  s.innerHTML=h;
+  setTimeout(function(){wireCast(s)},0);
+  return s;
+}
+function renderCast(){
+  var box=$("#castHistBox"); if(!box) return;
+  box.innerHTML="";
+  var a=castHist();
+  if(!a.length){ box.appendChild(el("div","note","还没有记录")); return }
+  a.forEach(function(u){
+    var b=el("button");b.style.minHeight="40px";b.style.fontSize="12px";b.style.overflow="hidden";
+    b.textContent=u.replace(/^https?:\/\//,"").slice(0,44);
+    b.onclick=function(){buzz();castSend(u,b)};
+    box.appendChild(b);
+  });
+}
+function wireCast(s){
+  var inEl=$("#castIn");
+  $("#castGo").onclick=function(){buzz();castSend(inEl.value,this)};
+  inEl.onkeydown=function(e){if(e.key==="Enter"){e.preventDefault();castSend(inEl.value,$("#castGo"))}};
+  $("#castClr").onclick=function(){buzz();inEl.value="";castMsg("")};
+  $("#castUrl").onclick=function(){buzz();
+    var v=(inEl.value||"").trim();
+    if(!v){castMsg("先粘链接");return}
+    var u=castLooksUrl(v);
+    if(u) castSend(u,$("#castUrl")); else castMsg("这不像个网址，用「丢过去」当搜索");
+  };
+  $("#castClip").onclick=function(){buzz();
+    if(!(navigator.clipboard&&navigator.clipboard.readText)||location.protocol!=="https:"){
+      castMsg("现在这页不是 HTTPS，浏览器不给读剪贴板。先长按输入框粘贴。");return}
+    navigator.clipboard.readText().then(function(t){
+      inEl.value=(t||"").trim();
+      if(!inEl.value){castMsg("剪贴板是空的");return}
+      castSend(inEl.value,$("#castClip"));
+    },function(){castMsg("剪贴板权限被拒了，长按输入框粘贴吧")});
+  };
+  var ps=$("#pwaSt");
+  if(ps)ps.textContent="　当前："+(location.protocol!=="https:"
+        ? "你是从 http:// 进来的，装不了 App"
+        : (SWOK===null ? "正在注册 Service Worker…"
+           : SWOK==="ok" ? "Service Worker 已注册 ✓ —— 浏览器菜单里「添加到主屏幕」就能当 App 用"
+             : "Service Worker 注册被拒：证书没被手机信任。开 ca 模式并装上 /ca.crt 再试"));
+  // 顶部那条提示被 ✕ 关掉之后，从这里再打开
+  var off2=false; try{off2=localStorage.getItem("br.tipoff")==="1"}catch(e){}
+  if(off2&&ps){var rb=document.createElement("button");rb.textContent="显示顶部提示";
+    rb.style.cssText="min-height:28px;font-size:12px;padding:0 8px;margin-left:6px;flex:0 0 auto";
+    rb.onclick=function(){buzz();if(window.reShowTip)reShowTip()};
+    ps.appendChild(rb)}
+  renderCast();
+}
+
+/* ---------- 陀螺仪 ---------- */
+// 躺着的时候抬手摩擦触控板是个体力活，而且手一抖就点歪；倾斜控标是"手腕动 3 度"的事。
+// 关键点：
+//  1) 相对当前姿态算，不是绝对角度 —— 手机平放、斜放、立着都能用，按「归零」重新定中点。
+//  2) 默认"按住才动"：不按住时倾斜不动光标，换个姿势不会把光标甩到天涯海角。
+//  3) 传感器事件在 http:// 下**根本不触发**（Chrome/Safari 把它当敏感能力），所以这页要 https 进。
+//  4) 位移累加器：发不出去（限流/断网）时要把发出去的份额还回去，不然"丢距离"——触控板踩过。
+var TILT={b0:null,g0:null,beta:null,gamma:null,got:0,sens:130,dead:1.5,invX:1,invY:1,
+          run:false,hold:false,ax:0,ay:0,last:0,timer:0,max:1600,paint:0};
+function tiltPref(k,v){ try{ var x=localStorage.getItem("br.tilt."+k); return x===null?v:JSON.parse(x) }catch(e){ return v } }
+function tiltSave(k,v){ try{ localStorage.setItem("br.tilt."+k,JSON.stringify(v)) }catch(e){} }
+function az(v,d){ return Math.abs(v)<=d?0:(Math.abs(v)-d)*(v<0?-1:1) }   // 死区：削掉中间那段
+function tiltAngle(){
+  var ax=0,ay=0;
+  if(TILT.got&&TILT.b0!==null){
+    ax=az(TILT.gamma-TILT.g0,TILT.dead)*TILT.invX;
+    ay=az(TILT.beta -TILT.b0 ,TILT.dead)*TILT.invY;
+  }
+  return [ax,ay];
+}
+function tiltStep(){
+  if(++TILT.paint%6===0) tiltPaint();          // 读数按 ~5Hz 刷，别每帧动 DOM
+  if(TILT.hold&&!TILT.holding){ TILT.ax=0; TILT.ay=0; return }   // "按住才动"开着且没按着：一点不发
+  var now=Date.now(), dt=(now-TILT.last)/1000; TILT.last=now;
+  if(!(dt>0)||dt>0.4) dt=0.033;
+  var a=tiltAngle();
+  var vx=Math.max(-TILT.max,Math.min(TILT.max,a[0]*TILT.sens));
+  var vy=Math.max(-TILT.max,Math.min(TILT.max,a[1]*TILT.sens));
+  TILT.ax+=vx*dt; TILT.ay+=vy*dt;
+  var dx=Math.trunc(TILT.ax), dy=Math.trunc(TILT.ay);
+  if(!dx&&!dy) return;
+  TILT.ax-=dx; TILT.ay-=dy;
+  send("c=move&dx="+dx+"&dy="+dy).then(function(r){
+    if(r==="busy"||r==="err"||r==="locked"){ TILT.ax+=dx; TILT.ay+=dy }   // 没发出去，还回累加器
+  });
+}
+function tiltPaint(){
+  var e=$("#tiltRead"); if(!e) return;
+  var a=tiltAngle();
+  e.textContent = (TILT.got? (Math.round(TILT.gamma)+"° / "+Math.round(TILT.beta)+"°") : "没有数据")
+    + (TILT.b0===null?"":"　偏移 "+a[0].toFixed(1)+" , "+a[1].toFixed(1));
+  var s=$("#tiltCfg"); if(s) s.textContent="灵敏度 "+TILT.sens+" px/s/度　·　死区 "+TILT.dead.toFixed(1)+"°";
+  var b=$("#tiltRun"); if(b) b.textContent=TILT.run?"停止":"开始动";
+  var m=$("#tiltMode"); if(m) m.innerHTML = TILT.hold
+    ? '按住才动 ✓<span class="sub">点一下改成一直动</span>' : '一直动（不用按着）<span class="sub">点一下改回按住才动</span>';
+  var h=$("#tiltHold"); if(h) h.classList.toggle("on",TILT.hold);
+  var w=$("#tiltWake"); if(w) w.textContent = (TILT.run&&TILT.wlOn)?"屏幕常亮 ✓":"屏幕常亮 —";
+}
+function tiltStart(){
+  if(TILT.run) return;
+  TILT.run=true; TILT.last=Date.now(); TILT.ax=0; TILT.ay=0;
+  window.addEventListener("deviceorientation",onOri);
+  TILT.timer=setInterval(tiltStep,33);
+  tiltWake(true);
+  if(!TILT.got) setTimeout(function(){ if(TILT.run&&!TILT.got) tiltHint() },1500);
+  tiltPaint();
+}
+function tiltStop(){
+  TILT.run=false;
+  if(TILT.timer){ clearInterval(TILT.timer); TILT.timer=0 }
+  window.removeEventListener("deviceorientation",onOri);
+  tiltWake(false);
+  tiltPaint();
+}
+function onOri(e){
+  if(e.beta===null&&e.gamma===null) return;
+  TILT.beta=e.beta; TILT.gamma=e.gamma; TILT.got=Date.now();
+  if(TILT.b0===null) tiltZero();
+}
+function tiltZero(){ TILT.b0=TILT.beta===null?0:TILT.beta; TILT.g0=TILT.gamma===null?0:TILT.gamma; TILT.ax=0; TILT.ay=0; tiltPaint() }
+function tiltHint(){
+  var m=$("#tiltHint"); if(!m) return;
+  m.innerHTML = location.protocol!=="https:"
+    ? '<b style="color:#ffb4a0">这页不是 https:// 打开的（现在是 '+location.protocol+'//）—— 手机浏览器在非 HTTPS 下不给陀螺仪数据（事件根本不触发）。</b><br>电脑上那个界面里勾了「手机走 HTTPS」之后，扫配对页出的 https 二维码进来就有了。'
+    : '没收到陀螺仪数据。这台设备可能没有陀螺仪（不少平板/低端机没有），或者浏览器把它关了。';
+}
+function tiltWake(on){
+  TILT.wlOn=false;
+  if(!on){ if(TILT.wl){ try{TILT.wl.release()}catch(e){} TILT.wl=null } return }
+  if(!(navigator.wakeLock&&location.protocol==="https:")) return;
+  navigator.wakeLock.request("screen").then(function(w){ TILT.wl=w; TILT.wlOn=true;
+    w.addEventListener("release",function(){ TILT.wlOn=false })
+  },function(){});
+}
+function tiltSection(){
+  TILT.sens=tiltPref("sens",130); TILT.dead=tiltPref("dead",1.5);
+  TILT.invX=tiltPref("invX",1); TILT.invY=tiltPref("invY",1); TILT.hold=tiltPref("hold",true);
+  var s=el("section");
+  var h='<div class="sect">倾斜控鼠标（躺着不用抬手摩擦屏幕）</div>';
+  h+='<div class="big" id="tiltRead" style="font-size:15px;text-align:center">没有数据</div>';
+  h+='<div class="grid" style="grid-template-columns:repeat(4,1fr)">'+
+     '<button id="tiltRun">开始动</button>'+
+     '<button id="tiltZero">归零<span class="sub">当前=中点</span></button>'+
+     '<button id="tiltX">反X</button><button id="tiltY">反Y</button></div>';
+  h+='<div class="sect">手感</div><div class="grid" style="grid-template-columns:repeat(4,1fr)">'+
+     '<button id="sensDn">灵敏度－</button><button id="sensUp">灵敏度＋</button>'+
+     '<button id="deadDn">死区－</button><button id="deadUp">死区＋</button></div>';
+  h+='<div class="note" id="tiltCfg"></div>';
+  h+='<div class="grid" style="grid-template-columns:repeat(2,1fr);margin-top:6px">'+
+     '<button id="tiltMode">按住才动 ✓<span class="sub">点一下改成一直动</span></button>'+
+     '<button id="tiltWake">屏幕常亮 —<span class="sub">要 HTTPS</span></button></div>';
+  h+='<div class="sect">按住下面这个大按钮，光标才跟着倾斜走（松手立刻停）</div>';
+  h+='<button id="tiltHold" class="big">按住我：光标才跟着倾斜动<span class="sub">松手立刻停</span></button>';
+  h+='<div class="grid" style="grid-template-columns:repeat(3,1fr);margin-top:8px">'+
+     '<button id="tiltClick">点击<span class="sub">在光标当前位置</span></button>'+
+     '<button id="tiltR">右击</button><button id="tiltD">双击</button></div>';
+  h+='<div class="note" id="tiltHint"></div>';
+  s.innerHTML=h;
+  setTimeout(function(){wireTilt(s)},0);
+  return s;
+}
+function wireTilt(s){
+  var hold=$("#tiltHold");
+  function press(e){ e.preventDefault(); if(!TILT.run) tiltStart(); TILT.holding=true; hold.classList.add("stuck") }
+  function lift(e){ if(!TILT.holding) return; TILT.holding=false; hold.classList.remove("stuck");
+    // 松手时把攒下的速度清掉，免得下次一按就弹一下
+    TILT.ax=0;TILT.ay=0 }
+  hold.addEventListener("touchstart",press,{passive:false});
+  hold.addEventListener("touchend",lift); hold.addEventListener("touchcancel",lift);
+  hold.addEventListener("mousedown",press); hold.addEventListener("mouseup",lift);
+  hold.onclick=function(){ buzz() };   // 这个按钮只负责"按着"，模式在上面的 tiltMode 里切
+  var mode=$("#tiltMode");
+  mode.onclick=function(){ buzz(); TILT.hold=!TILT.hold; tiltSave("hold",TILT.hold); tiltPaint() };
+  $("#tiltRun").onclick=function(){ buzz(); TILT.run?tiltStop():tiltStart();
+    if(window.DeviceOrientationEvent&&DeviceOrientationEvent.requestPermission)
+      DeviceOrientationEvent.requestPermission().then(function(r){ if(r!=="granted") tiltHint() },function(){}) };
+  $("#tiltZero").onclick=function(){ buzz(); tiltZero() };
+  $("#tiltX").onclick=function(){ buzz(); TILT.invX=-TILT.invX; tiltSave("invX",TILT.invX); this.classList.toggle("on",TILT.invX<0) };
+  $("#tiltY").onclick=function(){ buzz(); TILT.invY=-TILT.invY; tiltSave("invY",TILT.invY); this.classList.toggle("on",TILT.invY<0) };
+  $("#sensDn").onclick=function(){ buzz(); TILT.sens=Math.max(20,TILT.sens-30); tiltSave("sens",TILT.sens); tiltPaint() };
+  $("#sensUp").onclick=function(){ buzz(); TILT.sens=Math.min(600,TILT.sens+30); tiltSave("sens",TILT.sens); tiltPaint() };
+  $("#deadDn").onclick=function(){ buzz(); TILT.dead=Math.max(0,+(TILT.dead-0.5).toFixed(1)); tiltSave("dead",TILT.dead); tiltPaint() };
+  $("#deadUp").onclick=function(){ buzz(); TILT.dead=Math.min(8,+(TILT.dead+0.5).toFixed(1)); tiltSave("dead",TILT.dead); tiltPaint() };
+  $("#tiltClick").onclick=function(){ buzz(); send("c=btn&b=left") };
+  $("#tiltR").onclick=function(){ buzz(); send("c=btn&b=right") };
+  $("#tiltD").onclick=function(){ buzz(); send("c=btn&b=dbl") };
+  $("#tiltX").classList.toggle("on",TILT.invX<0); $("#tiltY").classList.toggle("on",TILT.invY<0);
+  tiltPaint();
+  if(!TILT.got&&location.protocol!=="https:") tiltHint();
+}
+
+/* ---------- 手柄（手机当游戏控制器） ---------- */
+// 布局里只有"键名 + 比例坐标"，不出现任何游戏名字：换个人、换个手机都能用。
+// 坐标约定：x/y = 控件左上角占画布宽/高的比例；w/h 按 min(宽,高) 算，所以正方形在横竖屏下还是正方形。
+// 所有控件（按钮 / 摇杆 / 视角区 / 十字键）挤在同一个 widgets 数组里 —— 这样"再加一个摇杆"、
+// "两块视角区"这类需求不用改任何代码，也不用给每种控件单独存一份。
+var GP_DEF={
+  widgets:[
+    {id:"stick1",kind:"stick",x:0.035,y:0.545,w:0.39,h:0.39,keys:["w","a","s","d"],run:"shift",runAt:0.82,dead:0.16},
+    {id:"look1",kind:"look",x:0.44,y:0.03,w:0.54,h:0.58,sens:1.5,invX:1,invY:1},
+    {id:"b1",x:0.615,y:0.700,w:0.235,h:0.235,round:1,label:"攻击",act:"mb",k:"left",mode:"hold"},
+    {id:"b2",x:0.505,y:0.885,w:0.165,h:0.165,round:1,label:"交互",act:"key",k:"e",mode:"tap"},
+    {id:"b3",x:0.700,y:0.885,w:0.165,h:0.165,round:1,label:"跳跃",act:"key",k:"space",mode:"tap"},
+    {id:"b4",x:0.865,y:0.760,w:0.125,h:0.125,round:1,label:"1",act:"key",k:"1",mode:"tap"},
+    {id:"b5",x:0.865,y:0.615,w:0.125,h:0.125,round:1,label:"2",act:"key",k:"2",mode:"tap"}
+  ],
+  opt:{hz:33}
+};
+var GP={set:null,lay:null,edit:false,sel:"",on:false,timer:0,root:null,
+        sent:"",ax:0,ay:0,
+        ptr:{},latch:{},rep:{},stickPtr:{},lookPtr:{},
+        lag:{pend:{},ms:-1,srv:-1,timer:0,n:0,sum:0,max:0}};
+function gpClone(o){ return JSON.parse(JSON.stringify(o)) }
+function gpId(){ return "w"+Date.now().toString(36)+Math.floor(Math.random()*900+100) }
+// 一套"布局集" = {active:当前预设名, ts:最后一次真改动的时刻, profiles:{名字:{widgets,opt}}}。
+// ts 是用来"跟着人走"的：布局存在每台电脑上，但人在机器之间走 —— 谁新谁赢，
+// 手机上这份更新过，连到另一台时就自动推过去，不用每台重摆一遍。
+function gpSetName(n){ var s=String(n==null?"":n).trim().slice(0,20); return s.length?s:"默认" }
+function gpFixSet(raw){
+  var s=null;
+  try{ s=(raw&&raw.profiles)?raw:null }catch(e){}
+  if(!s) s={active:"默认",ts:0,profiles:{"默认":gpFix(raw&&raw.buttons?raw:(raw||gpClone(GP_DEF)))}};
+  var out={};
+  Object.keys(s.profiles||{}).forEach(function(k){ out[gpSetName(k)]=gpFix(s.profiles[k]||{}) });
+  if(!Object.keys(out).length) out["默认"]=gpFix(gpClone(GP_DEF));
+  s.profiles=out;
+  if(!out[gpSetName(s.active)]) s.active=Object.keys(out)[0]; else s.active=gpSetName(s.active);
+  s.ts=+s.ts||0;
+  return s;
+}
+function gpCur(){ return GP.set.profiles[GP.set.active] }
+function gpTouched(){ GP.set.ts=Date.now(); try{ localStorage.setItem("br.gp",JSON.stringify(GP.set)) }catch(e){} }
+function gpLocalSet(){ try{ var x=JSON.parse(localStorage.getItem("br.gp")||"null"); return x?gpFixSet(x):null }catch(e){ return null } }
+function gpLoad(cb){
+  fetch("/gamepad?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){
+    var pc=d?gpFixSet(d):null, ph=gpLocalSet(), s=pc, src="电脑上的";
+    if(ph&&(!pc||ph.ts>pc.ts)){ s=ph; src="本机这份比电脑新" }
+    if(!s){ s=gpFixSet(null); src="内置的" }
+    GP.set=s; GP.lay=gpCur();
+    cb(s,src);
+    // 手机更新 → 顺手同步给这台电脑（静默），下次换台机器布局也跟着你
+    if(ph&&(!pc||ph.ts>pc.ts)) gpSaveLayout(true,true);
+  },function(){ var ph=gpLocalSet()||gpFixSet(null); GP.set=ph; GP.lay=gpCur(); cb(ph,ph&&ph.ts?"本机存的":"内置的") });
+}
+function gpSaveLayout(toPc,silent){
+  gpTouched();
+  if(!toPc) return;
+  fetch("/gamepad/save?t="+encodeURIComponent(T),{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"j="+encodeURIComponent(JSON.stringify(GP.set)),cache:"no-store"})
+    .then(function(r){ gpMsg(r.ok?"已存到电脑（预设「"+GP.set.active+"」共 "+Object.keys(GP.set.profiles).length+" 套）":"存到电脑失败："+r.status) },
+          function(){ if(!silent) gpMsg("存到电脑失败：连不上") });
+}
+function gpMsg(t){ var e=$("#gpst"); if(e) e.textContent=t }
+// 老布局（stick/look/buttons 三段）迁成统一的 widgets；顺便补齐缺字段，以后加类型也不会崩
+function gpFix(l){
+  var d=GP_DEF, out={opt:l.opt||gpClone(d.opt), widgets:[]};
+  var old=[];
+  if(l.widgets&&l.widgets.length) old=l.widgets;
+  else {
+    // 老格式（0.9.0 存在手机/电脑上的）：stick 用 cx/cy/r，look 用 x/y/w/h，buttons 是第三种。
+    // 迁移时必须把 kind 写上、并把摇杆的"圆心+半径"换成"左上角+边长"，否则它们会全被当成按钮。
+    if(l.stick&&l.stick.show!==0){
+      var m=gpClone(l.stick); m.kind="stick";
+      if(typeof m.cx==="number"&&typeof m.r==="number"){ m.x=m.cx-m.r; m.y=(typeof m.cy==="number"?m.cy:0.7)-m.r; m.w=m.r*2; m.h=m.r*2 }
+      delete m.cx; delete m.cy; delete m.r; delete m.show; old.push(m);
+    }
+    if(l.look&&l.look.show!==0){ var q=gpClone(l.look); q.kind="look"; delete q.show; old.push(q) }
+    if(l.buttons) l.buttons.forEach(function(b){ var c=gpClone(b); c.kind="btn"; old.push(c) });
+  }
+  old.forEach(function(w){
+    if(!w.id) w.id=gpId();
+    if(!w.kind) w.kind="btn";
+    if(typeof w.x!=="number") w.x=0.35;
+    if(typeof w.y!=="number") w.y=0.35;
+    if(typeof w.w!=="number") w.w=w.kind==="stick"?0.36:(w.kind==="look"?0.5:0.16);
+    if(typeof w.h!=="number") w.h=(w.kind==="stick"||w.kind==="dpad")?w.w:(w.kind==="look"?0.6:w.w);
+    if(w.kind==="btn"){
+      if(!w.act) w.act="key";
+      if(!w.k) w.k="q";
+      if(!w.mode) w.mode="tap";
+      if(!w.label) w.label=w.k;
+      if(typeof w.every!=="number") w.every=180;
+    }
+    if(w.kind==="stick"){
+      if(!(w.keys&&w.keys.length===4)) w.keys=["w","a","s","d"];
+      if(typeof w.runAt!=="number") w.runAt=0.82;
+      if(typeof w.dead!=="number") w.dead=0.16;
+      if(w.run===undefined) w.run="shift";
+    }
+    if(w.kind==="dpad"){ if(!(w.keys&&w.keys.length===4)) w.keys=["w","a","s","d"] }
+    if(w.kind==="look"){
+      if(typeof w.sens!=="number") w.sens=1.5;
+      if(typeof w.invX!=="number") w.invX=1; if(typeof w.invY!=="number") w.invY=1;
+    }
+    out.widgets.push(w);
+  });
+  if(!out.widgets.length) out.widgets=gpClone(d.widgets);
+  return out;
+}
+function gpSection(){
+  var s=el("section");
+  s.innerHTML='<div id="gp"></div>'+
+    '<button id="gphud" title="菜单">⋯</button>'+
+    '<div id="gptb">'+
+    '<div id="gpprow"><span id="gpprof"></span>'+
+      '<button id="gpnew">＋新预设</button><button id="gprn">改名</button><button id="gprm">删当前</button></div>'+
+    '<button id="gpe">编辑布局</button><button id="gpadd">＋按钮</button>'+
+    '<button id="gpadd2">＋摇杆</button><button id="gpadd3">＋十字键</button>'+
+    '<button id="gpadd4">＋视角区</button>'+
+    '<button id="gpsz">大小－</button><button id="gpsize">大小＋</button>'+
+    '<button id="gpcopy">复制</button><button id="gpdel">删除</button>'+
+    '<button id="gpsave">存到电脑</button><button id="gpre">读电脑</button>'+
+    '<button id="gpout">退出全屏</button><button id="gpex">换一台</button>'+
+    '<span id="gplag"></span><button id="gplagb">测延迟</button>'+
+    '<span id="gpst"></span></div>'+
+    '<div id="gpp"></div>'+
+    '<div class="note">圆盘走路（推得远自动带疾跑键）、任意一块区域拖动画视角、按钮可以是按键 / 组合键 / 鼠标键，'+
+    '模式有点按、按住、切换（按一下一直按着，再按一下松开）、连点（按住自动重复）。'+
+    '按「⋯」出菜单，编辑布局里选中控件会弹属性面板。预设可以存好几套，换游戏一划就换。</div>';
+  setTimeout(gpStart,0);
+  return s;
+}
+function gpStart(){
+  var root=$("#gp"); if(!root) return;
+  if(GP.on) send("c=release");     // 整页重绘后重新进来：先把上一份"按住"清掉
+  GP.root=root; gpIdle(); GP.sent="";
+  if(!GP.set) gpLoad(function(set,src){ GP.lay=gpCur(); gpBuild(); gpMsg("布局："+src+" · 预设「"+GP.set.active+"」") });
+  else gpBuild();
+  var b;
+  b=$("#gpe"); b.onclick=function(){ buzz(); GP.edit=!GP.edit; GP.sel=""; b.classList.toggle("on",GP.edit);
+    b.textContent=GP.edit?"退出编辑":"编辑布局"; gpBuild(); gpPanel();
+    gpMsg(GP.edit?"点控件选中并拖着摆位置；选中后弹属性面板可以改一切":"") };
+  $("#gpadd").onclick=function(){ buzz(); gpAdd("btn") };
+  $("#gpadd2").onclick=function(){ buzz(); gpAdd("stick") };
+  $("#gpadd3").onclick=function(){ buzz(); gpAdd("dpad") };
+  $("#gpadd4").onclick=function(){ buzz(); gpAdd("look") };
+  $("#gpsz").onclick=function(){ buzz(); gpSize(-0.03) };
+  $("#gpsize").onclick=function(){ buzz(); gpSize(0.03) };
+  $("#gpcopy").onclick=function(){ buzz(); gpCopy() };
+  $("#gpdel").onclick=function(){ buzz(); gpDel() };
+  $("#gpsave").onclick=function(){ buzz(); gpSaveLayout(true) };
+  $("#gpre").onclick=function(){ buzz(); GP.lay=null; gpLoad(function(l,src){GP.lay=l;gpBuild();gpPanel();gpMsg("布局："+src)}) };
+  $("#gpout").onclick=function(){ buzz(); gpImm(false) };
+  $("#gpex").onclick=function(){ buzz(); if(window.machOpen) machOpen() };
+  $("#gpnew").onclick=function(){ buzz(); gpNewProfile() };
+  $("#gprn").onclick=function(){ buzz(); gpRenProfile() };
+  $("#gprm").onclick=function(){ buzz(); gpDelProfile() };
+  $("#gplagb").onclick=function(){ buzz(); gpLagProbe(true) };
+  $("#gphud").onclick=function(){ buzz(); var t=$("#gptb"); var on=t.classList.toggle("on"); $("#gpp").classList.remove("on");
+    this.textContent=on?"✕":"" };
+  addEventListener("resize",gpPlace);
+  addEventListener("orientationchange",function(){ setTimeout(gpPlace,220) });
+  GP.on=true;
+  // 只有这一页真的在显示时才沉浸：整页重绘时 gpStart 会被无条件调一次，
+  // 那时候人可能在"打字"页上，直接把状态栏藏了就很怪。
+  gpImm(gpShown());
+  if(GP.imm) gpLagStart();
+}
+/* ---- 预设：一套布局集里可以存多套，换游戏一划就换 ---- */
+function gpProfNames(){ return GP.set?Object.keys(GP.set.profiles):[] }
+function gpPaintProf(){
+  var box=$("#gpprof"); if(!box||!GP.set) return;
+  var h="";
+  gpProfNames().forEach(function(n){
+    h+='<button class="pf'+(n===GP.set.active?" on":"")+'" data-p="'+gpAttr(n)+'">'+gpAttr(n)+'</button>' });
+  box.innerHTML=h;
+  var bs=box.querySelectorAll("button");
+  for(var i=0;i<bs.length;i++) bs[i].onclick=function(){ buzz(); gpSwitch(this.dataset.p) };
+}
+function gpSwitch(n){
+  if(!GP.set||!GP.set.profiles[n]||n===GP.set.active) return;
+  GP.set.active=n; gpTouched(); GP.lay=gpCur(); GP.sel="";
+  gpIdle(); gpBuild(); gpPanel(); gpLoop();
+  gpMsg("切到预设「"+n+"」");
+}
+function gpNewProfile(){
+  var n=prompt("新预设叫什么名字？（比如「动作」「策略」「刷本」）","新预设");
+  if(n===null) return; n=gpSetName(n);
+  if(GP.set.profiles[n]){ alert("已经有叫「"+n+"」的预设了，换一个名字"); return }
+  var copy=confirm("把当前「"+GP.set.active+"」的控件复制进去？\n\n取消 = 从内置默认布局开始。");
+  GP.set.profiles[n]=copy?gpClone(GP.lay):gpFix(gpClone(GP_DEF));
+  GP.set.active=n; gpTouched(); GP.lay=gpCur(); GP.sel="";
+  gpBuild(); gpMsg("新预设「"+n+"」");
+}
+function gpRenProfile(){
+  var n=prompt("当前预设改叫什么名字？",GP.set.active);
+  if(n===null) return; n=gpSetName(n);
+  if(n===GP.set.active) return;
+  if(GP.set.profiles[n]){ alert("已经有叫「"+n+"」的预设了"); return }
+  GP.set.profiles[n]=GP.set.profiles[GP.set.active];
+  delete GP.set.profiles[GP.set.active];
+  GP.set.active=n; gpTouched(); gpBuild();
+}
+function gpDelProfile(){
+  if(gpProfNames().length<=1){ gpMsg("只剩一套了，没什么可删"); return }
+  var n=GP.set.active;
+  if(!confirm("删掉预设「"+n+"」？删了就找不回来了。")) return;
+  delete GP.set.profiles[n];
+  GP.set.active=Object.keys(GP.set.profiles)[0]; gpTouched(); GP.lay=gpCur(); GP.sel="";
+  gpBuild(); gpPanel(); gpMsg("删了「"+n+"」，现在是「"+GP.set.active+"」");
+}
+/* ---- 延迟：手机发个时间戳，电脑原样退回，同一个钟算差值，不用两边对表 ---- */
+function gpLagProbe(show){
+  var id="l"+Date.now()+Math.floor(Math.random()*999);
+  GP.lag.pend[id]=Date.now();
+  if(show) gpMsg("在测…");
+  api("c=lag&t0="+encodeURIComponent(id)).then(null,function(){});
+}
+function gpLagGot(id,srv){
+  var t0=GP.lag.pend[id]; if(!t0) return;      // 不是我这次的探测，忽略（别的手机发的）
+  delete GP.lag.pend[id];
+  var ms=Date.now()-t0;
+  if(ms<0||ms>8000) return;
+  GP.lag.ms=ms; GP.lag.srv=srv; GP.lag.n++; GP.lag.sum+=ms;
+  if(ms>GP.lag.max) GP.lag.max=ms;
+  gpPaintLag();
+}
+function gpPaintLag(){
+  var e=$("#gplag"); if(!e) return;
+  if(GP.lag.ms<0){ e.textContent="延迟：没测"; return }
+  e.textContent="延迟 本次"+GP.lag.ms+"ms · 平均"+Math.round(GP.lag.sum/GP.lag.n)+
+                " · 最差"+GP.lag.max+"ms（其中电脑处理 "+GP.lag.srv+"ms）";
+}
+function gpLagStart(){
+  if(GP.lag.timer||!GP.on) return;
+  gpLagProbe(false);
+  GP.lag.timer=setInterval(function(){ if(GP.on) gpLagProbe(false) },2000);
+}
+function gpLagStop(){ if(GP.lag.timer){ clearInterval(GP.lag.timer); GP.lag.timer=0 } }
+function gpShown(){ try{ return !!(GP.root&&GP.root.offsetParent!==null) }catch(e){ return true } }
+function gpAdd(kind){
+  var w={id:gpId(),kind:kind,x:0.34,y:0.34,w:kind==="btn"?0.16:0.34,h:kind==="btn"?0.16:0.34};
+  if(kind==="btn"){ w.round=1; w.label="新键"; w.act="key"; w.k="q"; w.mode="tap"; w.every=180 }
+  if(kind==="stick"){ w.keys=["w","a","s","d"]; w.run="shift"; w.runAt=0.82; w.dead=0.16 }
+  if(kind==="dpad"){ w.keys=["w","a","s","d"] }
+  if(kind==="look"){ w.sens=1.5; w.invX=1; w.invY=1 }
+  GP.lay.widgets.push(w); GP.sel=w.id;
+  if(!GP.edit){ GP.edit=true; var e=$("#gpe"); if(e){e.classList.add("on");e.textContent="退出编辑"} }
+  gpBuild(); gpPanel(); gpMsg("新控件放在中间，拖着摆位置");
+}
+function gpSel(){ var id=GP.sel; return GP.lay.widgets.filter(function(w){return w.id===id})[0]||null }
+function gpSize(d){
+  var w=gpSel(); if(!w){ gpMsg("先点一个控件选中它"); return }
+  w.w=Math.max(0.06,Math.min(0.95,+(w.w+d).toFixed(3)));
+  if(w.kind==="stick"||w.kind==="dpad"||w.round) w.h=w.w;
+  else w.h=Math.max(0.04,Math.min(0.95,+(w.h+d).toFixed(3)));
+  gpPlace(); gpPanel();
+}
+function gpCopy(){
+  var w=gpSel(); if(!w){ gpMsg("先点一个要复制的控件"); return }
+  var c=gpClone(w); c.id=gpId(); c.x=Math.min(0.9,c.x+0.05); c.y=Math.min(0.9,c.y+0.05);
+  if(c.label) c.label=c.label+"2";
+  GP.lay.widgets.push(c); GP.sel=c.id; gpBuild(); gpPanel();
+}
+function gpDel(){
+  if(!GP.sel){ gpMsg("先点一个控件选中它"); return }
+  GP.lay.widgets=GP.lay.widgets.filter(function(w){return w.id!==GP.sel});
+  GP.sel=""; gpBuild(); gpPanel();
+}
+function gpBuild(){
+  var root=GP.root; if(!root||!GP.lay) return;
+  root.innerHTML=""; root.className=GP.edit?"gpedit":"";
+  GP.lay.widgets.forEach(function(w){
+    var cls="gpw";
+    if(w.kind==="stick") cls+=" gpstick";
+    else if(w.kind==="look") cls+=" gplook";
+    else if(w.kind==="dpad") cls+=" gpdpad";
+    else cls+=" gpbtn"+(w.round?" round":"");
+    var e=el("div",cls); e.dataset.w=w.id;
+    if(w.kind==="stick"){ e.appendChild(el("div","knob")) }
+    else if(w.kind==="look"){ e.appendChild(el("span",null,"拖动＝转视角")) }
+    else if(w.kind==="dpad"){
+      ["↑","←","↓","→"].forEach(function(t,i){ var c=el("span","dirc"); c.dataset.dir=i; c.textContent=t; e.appendChild(c) })
+    }
+    else e.textContent=w.label||w.k||"·";
+    if(typeof w.alpha==="number"&&w.alpha>0&&w.alpha<1) e.style.opacity=String(w.alpha);
+    root.appendChild(e);
+  });
+  gpPlace(); gpBind(); gpPaintSel(); gpPaintProf(); gpPaintLag();
+}
+function gpRects(){
+  var root=GP.root, W=root.clientWidth, H=root.clientHeight, S=Math.min(W,H), out={};
+  GP.lay.widgets.forEach(function(w){
+    var pw=w.w*S, ph=(w.kind==="stick"||w.kind==="dpad")?w.w*S:w.h*S;
+    var x=w.x*W, y=w.y*H;
+    out[w.id]={x:x,y:y,w:pw,h:ph,cx:x+pw/2,cy:y+ph/2,r:pw/2};
+    if(w.kind==="dpad") out[w.id].r=ph/2;
+  });
+  return out;
+}
+function gpPlace(){
+  if(!GP.root||!GP.lay) return;
+  var R=gpRects(), root=GP.root, W=root.clientWidth, H=root.clientHeight;
+  if(!W||!H) return;
+  Array.prototype.forEach.call(root.querySelectorAll(".gpw"),function(e){
+    var k=e.dataset.w, r=R[k]; if(!r) return;
+    // 夹在画布内：不同手机尺寸/横竖屏都不指望布局碰巧对得上
+    var x=Math.max(0,Math.min(W-r.w,r.x)), y=Math.max(0,Math.min(H-r.h,r.y));
+    e.style.left=Math.round(x)+"px"; e.style.top=Math.round(y)+"px";
+    e.style.width=Math.round(r.w)+"px"; e.style.height=Math.round(r.h)+"px";
+  });
+}
+function gpLocal2(px,py){
+  if(!GP.root) return {x:px,y:py};
+  var b=GP.root.getBoundingClientRect();
+  return {x:px-b.left-GP.root.clientLeft, y:py-b.top-GP.root.clientTop};
+}
+function gpBind(){
+  var root=GP.root;
+  function down(e){
+    var t=e.target.closest?e.target.closest(".gpw"):null; if(!t) return;
+    var id=t.dataset.w; if(!id) return;
+    e.preventDefault();
+    try{ t.setPointerCapture(e.pointerId) }catch(x){}
+    var p=gpLocal2(e.clientX,e.clientY);
+    if(GP.edit){ GP.sel=id; gpPaintSel(); GP.ptr[id]={drag:true,x:e.clientX,y:e.clientY,sx:e.clientX,sy:e.clientY,moved:0}; gpPanel(); return }
+    var w=gpById(id); if(!w) return;
+    GP.ptr[id]={kind:w.kind,sx:e.clientX,sy:e.clientY,moved:0,dir:-1};
+    if(w.kind==="stick"){ GP.stickPtr[id]=e.pointerId; gpStick(id,e.clientX,e.clientY) }
+    else if(w.kind==="look"){ GP.lookPtr[id]=e.pointerId; GP.lastLook[id]={x:e.clientX,y:e.clientY}; gpTouch(w,e.clientX,e.clientY,id) }
+    else if(w.kind==="dpad"){ gpTouch(w,e.clientX,e.clientY,id) }
+    else {
+      if(w.mode==="toggle"){ GP.latch[id]=!GP.latch[id]; buzz() }
+      else if(w.mode==="tap"){ buzz(); gpTap(w) }
+      else buzz();
+      gpTouch(w,e.clientX,e.clientY,id);
+    }
+    gpPaintOn(); gpLoop();
+  }
+  function move(e){
+    var t=e.target.closest?e.target.closest(".gpw"):null; if(!t) return;
+    var id=t.dataset.w, p=GP.ptr[id]; if(!p) return;
+    e.preventDefault();
+    // 用"离起手点多远"判断是不是拖动，别用 movementX：合成事件和部分触屏上它是 0/undefined，
+    // 结果就是"我明明在拖，它却弹了属性面板"（真浏览器抓到过）。
+    p.moved=Math.max(p.moved,Math.abs(e.clientX-p.sx)+Math.abs(e.clientY-p.sy));
+    if(GP.edit&&p.drag){ gpMove(id,e.clientX-p.x,e.clientY-p.y); p.x=e.clientX; p.y=e.clientY; return }
+    var w=gpById(id); if(!w) return;
+    if(w.kind==="stick"&&e.pointerId===GP.stickPtr[id]) gpStick(id,e.clientX,e.clientY);
+    else if(w.kind==="look"&&e.pointerId===GP.lookPtr[id]) gpTouch(w,e.clientX,e.clientY,id);
+    else if(w.kind==="dpad") gpTouch(w,e.clientX,e.clientY,id);
+  }
+  function up(e){
+    var t=e.target.closest?e.target.closest(".gpw"):null;
+    var id=t?t.dataset.w:null;
+    if(id&&GP.ptr[id]){
+      if(GP.edit&&GP.ptr[id].drag&&GP.ptr[id].moved<10) gpPanel();
+      var w=gpById(id);
+      if(w&&w.kind==="stick"){ delete GP.stickPtr[id]; gpStick(id,0,0,true) }
+      if(w&&w.kind==="look"){ delete GP.lookPtr[id]; delete GP.lastLook[id] }
+      if(w&&w.kind==="dpad") w._dir=-1;
+      delete GP.ptr[id];
+      // 只有编辑模式真的挪了东西才算"改动"（会 bump 时间戳、触发同步）；
+      // 平时玩的时候抬一下手指不该把布局集标记成"比电脑新"。
+      if(GP.edit) gpSaveLayout(false);
+    }
+    gpPaintOn(); gpLoop();
+  }
+  root.onpointerdown=down; root.onpointermove=move; root.onpointerup=up;
+  root.onpointercancel=up; root.onlostpointercapture=up;
+  root.oncontextmenu=function(e){e.preventDefault()};
+}
+function gpById(id){ return GP.lay.widgets.filter(function(w){return w.id===id})[0]||null }
+function gpTouch(w,px,py,id){
+  var p=gpLocal2(px,py), R=gpRects()[w.id];
+  if(w.kind==="look"){
+    var last=GP.lastLook[id];
+    if(last){ GP.ax+=(px-last.x)*w.sens*w.invX; GP.ay+=(py-last.y)*w.sens*w.invY }
+    GP.lastLook[id]={x:px,y:py};
+  } else if(w.kind==="dpad"){
+    var dx=p.x-R.cx, dy=p.y-R.cy;
+    var dir=(Math.abs(dx)>=Math.abs(dy))?(dx>0?3:1):(dy>0?2:0);
+    w._dir=dir;
+  }
+}
+function gpStick(id,px,py,off){
+  var e=GP.root.querySelector('[data-w="'+id+'"]'); if(!e) return;
+  var knob=e.querySelector(".knob"), w=gpById(id); if(!w) return;
+  var R=gpRects()[id];
+  if(off||!GP.stickPtr[id]){ w._vec=null; if(knob){knob.style.marginLeft="0px";knob.style.marginTop="0px"} e.classList.remove("on"); return }
+  var p=gpLocal2(px,py);
+  var dx=p.x-R.cx, dy=p.y-R.cy, len=Math.sqrt(dx*dx+dy*dy)||1;
+  var f=Math.min(1,len/R.r);
+  if(knob){ knob.style.marginLeft=Math.round(dx/len*f*R.r*0.55)+"px"; knob.style.marginTop=Math.round(dy/len*f*R.r*0.55)+"px" }
+  e.classList.toggle("on",f>0.02);
+  // 存"离圆心多远"的真实分量（除以半径），别存单位向量：单位向量把推得多轻都变成 1，死区就废了
+  w._vec={ux:Math.max(-1,Math.min(1,dx/R.r)),uy:Math.max(-1,Math.min(1,dy/R.r)),f:f};
+}
+function gpTap(w){
+  if(w.act==="mb") send("c=btn&b="+encodeURIComponent(w.k));
+  else if(w.act==="combo") send("c=combo&k="+encodeURIComponent(w.k)+"&m="+encodeURIComponent(w.mods||""));
+  else send("c=key&k="+encodeURIComponent(w.k));
+}
+function gpWanted(){
+  var ks=[],mb=[],L=GP.lay;
+  function addKey(n){ if(n) ks.push(String(n).trim()) }
+  L.widgets.forEach(function(w){
+    var held=!!GP.ptr[w.id], lit=!!GP.latch[w.id];
+    if(w.kind==="stick"&&(held||lit)&&w._vec){
+      var v=w._vec, th=0.42, dead=w.dead==null?0.16:w.dead, K=w.keys||[];
+      if(v.f>dead){
+        if(Math.abs(v.uy)>=th) addKey(K[v.uy<0?0:2]);
+        if(Math.abs(v.ux)>=th) addKey(K[v.ux<0?1:3]);
+        if(w.run&&v.f>=(w.runAt||0.8)) addKey(w.run);
+      }
+    }
+    else if(w.kind==="dpad"&&held){
+      var d=(typeof w._dir==="number"&&w._dir>=0)?w._dir:-1;
+      if(d>=0) addKey((w.keys||[])[d]);
+    }
+    else if(w.kind==="btn"&&(held||lit)&&w.act!=="mb"){
+      if(w.mode==="hold"||w.mode==="toggle"||w.mode==="repeat"){
+        if(w.act==="combo"){ String(w.mods||"").split("+").forEach(function(m){ addKey(m) }); addKey(w.k) }
+        else addKey(w.k);
+      }
+    }
+    if(w.kind==="btn"&&w.act==="mb"&&(held||lit)&&(w.mode==="hold"||w.mode==="toggle")) mb.push(w.k);
+  });
+  var u={},ku=[],mu=[];
+  ks.forEach(function(k){ k=String(k||"").trim(); if(k&&k.indexOf("+")<0&&!u[k]){u[k]=1;ku.push(k)} });
+  u={}; mb.forEach(function(k){ k=String(k||"").trim(); if(k&&!u[k]){u[k]=1;mu.push(k)} });
+  return {keys:ku,mb:mu};
+}
+function gpLoop(){
+  if(GP.timer||!GP.on) return;
+  var hz=(GP.lay&&GP.lay.opt&&GP.lay.opt.hz)||33;
+  GP.timer=setInterval(gpTick,Math.max(16,Math.min(200,hz)));
+}
+function gpIdle(){
+  GP.ptr={}; GP.stickPtr={}; GP.lookPtr={}; GP.lastLook={}; GP.ax=0; GP.ay=0;
+  if(GP.lay) GP.lay.widgets.forEach(function(w){ w._vec=null; w._dir=-1 });
+}
+function gpTick(){
+  if(!GP.lay||!GP.root||!GP.on) return;
+  var w=gpWanted();
+  var dx=Math.trunc(GP.ax), dy=Math.trunc(GP.ay);
+  var state=w.keys.join(",")+"|"+w.mb.join(",");
+  if(state===GP.sent&&!dx&&!dy){ gpRep(); gpStatus(w); return }   // 空闲：一个包都不发
+  var nx=GP.ax-dx, ny=GP.ay-dy;
+  GP.sent=state;
+  var p="c=frame&keys="+encodeURIComponent(state.split("|")[0])+"&mb="+encodeURIComponent(state.split("|")[1]);
+  if(dx||dy) p+="&dx="+dx+"&dy="+dy;
+  send(p).then(function(r){
+    if(r==="locked"){
+      // 锁屏/UAC 时注入会被系统丢掉：键状态就成了假的"以为还按着"，全部收手
+      gpIdle(); GP.latch={}; GP.sent=""; gpMsg("电脑在锁屏或等 UAC，注入会被丢掉：先解锁"); gpStatus(w); return;
+    }
+    if(r==="busy"||r==="err"){ GP.ax=nx+dx; GP.ay=ny+dy; GP.sent="" }   // 没送到：位移还回累加器，下一帧重发
+    else { GP.ax=nx; GP.ay=ny; gpStatus(w) }
+    gpRep();
+  });
+}
+// 连点：按住期间每隔 every 毫秒补一次点按（走独立的 c=key，不掺进帧里，免得差分算错）
+function gpRep(){
+  var now=Date.now();
+  GP.lay.widgets.forEach(function(w){
+    if(w.kind!=="btn"||w.mode!=="repeat"||!GP.ptr[w.id]) return;
+    var ev=Math.max(60,+w.every||180);
+    if(GP.rep[w.id]&&now-GP.rep[w.id]<ev) return;
+    GP.rep[w.id]=now;
+    if(w.act==="mb") send("c=btn&b="+encodeURIComponent(w.k));
+    else if(w.act==="combo") send("c=combo&k="+encodeURIComponent(w.k)+"&m="+encodeURIComponent(w.mods||""));
+    else send("c=key&k="+encodeURIComponent(w.k));
+  });
+}
+function gpStatus(w){
+  var e=$("#gpst"); if(!e) return;
+  var n=Object.keys(GP.ptr).length;
+  e.textContent=(GP.edit?"编辑中 · 选中 "+(GP.sel?"1 个":"无"):"按住 "+(w.keys.length||w.mb.length?w.keys.concat(w.mb).join(" + "):"无")+" · 手指 "+n);
+}
+function gpPaintSel(){
+  if(!GP.root) return;
+  Array.prototype.forEach.call(GP.root.querySelectorAll(".gpw"),function(e){
+    e.classList.toggle("sel",e.dataset.w===GP.sel)});
+}
+function gpPaintOn(){
+  if(!GP.root) return;
+  var on={};
+  Object.keys(GP.ptr).forEach(function(id){on[id]=1});
+  Object.keys(GP.latch).forEach(function(id){ if(GP.latch[id]) on[id]=1 });
+  Array.prototype.forEach.call(GP.root.querySelectorAll(".gpw"),function(e){
+    e.classList.toggle("on",!!on[e.dataset.w])});
+}
+function gpMove(id,dxpx,dypx){
+  var root=GP.root, W=root.clientWidth, H=root.clientHeight;
+  var w=gpById(id); if(!w) return;
+  w.x=Math.max(0,Math.min(0.98,w.x+dxpx/W)); w.y=Math.max(0,Math.min(0.98,w.y+dypx/H));
+  gpPlace();
+}
+/* ---- 属性面板：编辑时选中控件，从底部滑出来，一次改完所有字段 ---- */
+function gpPanel(){
+  var box=$("#gpp"); if(!box) return;
+  var w=GP.edit?gpSel():null;
+  if(!w){ box.classList.remove("on"); box.innerHTML=""; return }
+  var k=w.kind;
+  var h='<div id="gpph">'+({btn:"按钮",stick:"摇杆",look:"视角区",dpad:"十字键"})[k]+' · '+w.id+'</div><div id="gppg">';
+  if(k==="btn"){
+    h+='<label>名字<input id="pLab" type="text" value="'+gpAttr(w.label)+'"></label>';
+    h+='<label>动作<select id="pAct"><option value="key">键盘</option><option value="combo">组合键</option><option value="mb">鼠标键</option></select></label>';
+    h+='<label>键位<input id="pK" type="text" value="'+gpAttr(w.k)+'"><button id="pGrab" class="grab">抓键</button></label>';
+    h+='<input id="pHid" autocomplete="off" autocorrect="off" spellcheck="false" style="position:absolute;left:-60px;top:0;width:40px;height:40px;opacity:.01">';
+    h+='<label id="pModsRow" style="display:none">修饰键<input id="pMods" type="text" value="'+gpAttr(w.mods||"")+'" placeholder="ctrl+shift"></label>';
+    h+='<label id="pMbRow" style="display:none">鼠标<select id="pMb"><option value="left">左</option><option value="right">右</option><option value="mid">中</option></select></label>';
+    h+='<label>模式<select id="pMode"><option value="tap">点按</option><option value="hold">按住</option><option value="toggle">切换（按一下一直按着）</option><option value="repeat">连点</option></select></label>';
+    h+='<label id="pEvRow">连点间隔(ms)<input id="pEv" type="number" min="60" step="20" value="'+(w.every||180)+'"></label>';
+  } else if(k==="stick"){
+    h+='<label>上<input id="pK0" class="k4" value="'+gpAttr((w.keys||[])[0])+'"></label>';
+    h+='<label>左<input id="pK1" class="k4" value="'+gpAttr((w.keys||[])[1])+'"></label>';
+    h+='<label>下<input id="pK2" class="k4" value="'+gpAttr((w.keys||[])[2])+'"></label>';
+    h+='<label>右<input id="pK3" class="k4" value="'+gpAttr((w.keys||[])[3])+'"></label>';
+    h+='<label>疾跑键<input id="pRun" value="'+gpAttr(w.run||"")+'"></label>';
+    h+='<label>死区<input id="pDead" type="number" min="0" max="0.6" step="0.02" value="'+(w.dead==null?0.16:w.dead)+'"></label>';
+    h+='<label>疾跑阈值<input id="pRunAt" type="number" min="0.3" max="1" step="0.02" value="'+(w.runAt||0.82)+'"></label>';
+  } else if(k==="dpad"){
+    h+='<label>上<input id="pK0" class="k4" value="'+gpAttr((w.keys||[])[0])+'"></label>';
+    h+='<label>左<input id="pK1" class="k4" value="'+gpAttr((w.keys||[])[1])+'"></label>';
+    h+='<label>下<input id="pK2" class="k4" value="'+gpAttr((w.keys||[])[2])+'"></label>';
+    h+='<label>右<input id="pK3" class="k4" value="'+gpAttr((w.keys||[])[3])+'"></label>';
+  } else {
+    h+='<label>灵敏度<input id="pSens" type="number" min="0.2" max="8" step="0.1" value="'+(w.sens||1.5)+'"></label>';
+    h+='<label>X<select id="pInvX"><option value="1">正常</option><option value="-1">反转</option></select></label>';
+    h+='<label>Y<select id="pInvY"><option value="1">正常</option><option value="-1">反转</option></select></label>';
+  }
+  h+='<label>大小<input id="pW" type="range" min="0.06" max="0.95" step="0.01" value="'+w.w+'"></label>';
+  h+='<label>高<input id="pH" type="range" min="0.04" max="0.95" step="0.01" value="'+w.h+'"></label>';
+  h+='<label>透明<input id="pA" type="range" min="0.15" max="1" step="0.05" value="'+(w.alpha==null?1:w.alpha)+'"></label>';
+  if(k==="btn") h+='<label class="ck"><input id="pRound" type="checkbox"'+(w.round?" checked":"")+'> 圆形</label>';
+  h+='</div><div id="gppb"><button id="pCopy">复制</button><button id="pDel">删除</button><button id="pOk">完成</button></div>';
+  box.innerHTML=h; box.classList.add("on");
+  var g=function(id){ return document.getElementById(id) };
+  if(k==="btn"){
+    g("pAct").value=w.act||"key"; g("pMode").value=w.mode||"tap";
+    if(w.act==="mb") g("pMb").value=w.k;
+    function syncRows(){
+      g("pModsRow").style.display=g("pAct").value==="combo"?"":"none";
+      g("pMbRow").style.display=g("pAct").value==="mb"?"":"none";
+      g("pK").style.display=g("pAct").value==="mb"?"none":"";
+      g("pEvRow").style.display=g("pMode").value==="repeat"?"":"none";
+    }
+    syncRows();
+    g("pAct").onchange=function(){ w.act=this.value; if(this.value==="mb") w.k="left"; gpBuild(); gpPanel() };
+    g("pMode").onchange=function(){ w.mode=this.value; gpBuild() };
+    g("pLab").oninput=function(){ w.label=this.value; gpBuild(); gpKeepSel() };
+    g("pK").oninput=function(){ w.k=this.value; gpBuild(); gpKeepSel() };
+    g("pMods").oninput=function(){ w.mods=this.value };
+    g("pMb").onchange=function(){ w.k=this.value; gpBuild() };
+    g("pEv").oninput=function(){ w.every=+this.value||180 };
+    g("pRound").onchange=function(){ w.round=this.checked?1:0; w.h=w.w; gpBuild(); gpPanel() };
+    // "抓键"靠一个躲在屏幕外的真输入框：手机上不聚焦输入框，软键盘根本不出来，
+    // 光监听 keydown 是收不到字的（桌面能，手机不能）。
+    g("pGrab").onclick=function(){
+      var hid=g("pHid"); if(!hid) return;
+      hid.value=""; hid.focus();
+      this.classList.add("on"); this.textContent="按一个键…"; gpMsg("手机键盘上按一个键就填进去了");
+    };
+    var hidEnd=function(back){ var b=g("pGrab"); if(b){b.classList.remove("on");b.textContent="抓键"}
+      if(back&&w.act==="mb") return; };
+    g("pHid").oninput=function(){
+      var v=this.value; this.style.visibility="hidden"; this.blur();
+      hidEnd(true);
+      if(!v) return;
+      var ch=v.trim().slice(-1); if(!ch) return;
+      w.k=ch; g("pK").value=ch; gpBuild(); gpKeepSel(); gpSaveLayout(false);
+    };
+    g("pHid").onblur=function(){ hidEnd(false) };
+  } else if(k==="stick"||k==="dpad"){
+    [0,1,2,3].forEach(function(i){ var e=g("pK"+i); if(e)e.oninput=function(){ w.keys[i]=this.value; gpBuild(); gpKeepSel() } });
+    if(k==="stick"){
+      g("pRun").oninput=function(){ w.run=this.value; gpBuild(); gpKeepSel() };
+      g("pDead").onchange=function(){ w.dead=+this.value };
+      g("pRunAt").onchange=function(){ w.runAt=+this.value };
+    }
+  } else {
+    g("pSens").onchange=function(){ w.sens=+this.value||1.5 };
+    g("pInvX").value=String(w.invX||1); g("pInvY").value=String(w.invY||1);
+    g("pInvX").onchange=function(){ w.invX=+this.value };
+    g("pInvY").onchange=function(){ w.invY=+this.value };
+  }
+  g("pW").oninput=function(){ w.w=+this.value; if(w.kind==="stick"||w.kind==="dpad"||w.round) w.h=w.w; gpPlace() };
+  g("pH").oninput=function(){ w.h=+this.value; gpPlace() };
+  g("pA").oninput=function(){ w.alpha=+this.value; gpBuild(); gpKeepSel() };
+  g("pCopy").onclick=function(){ buzz(); gpCopy() };
+  g("pDel").onclick=function(){ buzz(); gpDel() };
+  g("pOk").onclick=function(){ buzz(); box.classList.remove("on"); GP.sel=""; gpPaintSel() };
+}
+function gpKeepSel(){ if(GP.root) Array.prototype.forEach.call(GP.root.querySelectorAll(".gpw"),function(e){
+  e.classList.toggle("sel",e.dataset.w===GP.sel); e.classList.toggle("on",false) }) }
+function gpAttr(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;") }
+/* ---- 沉浸全屏：顶部状态条、底部页签、提示条全收起来，只留画布 ---- */
+function gpImm(on){
+  on=!!on;
+  if(GP.imm===on) return;                 // 幂等：show() 和 gpStart() 都会调它，别重复去请求全屏
+  GP.imm=on;
+  document.body.classList.toggle("gpf",GP.imm);
+  var t=$("#gptb"); if(t) t.classList.remove("on");
+  var hud=$("#gphud"); if(hud) hud.textContent="⋯";
+  var d=document.documentElement;
+  try{
+    if(GP.imm&&!document.fullscreenElement&&(d.requestFullscreen||d.webkitRequestFullscreen))
+      (d.requestFullscreen||d.webkitRequestFullscreen).call(d,{navigationUI:"hide"});
+    else if(!GP.imm&&document.fullscreenElement&&document.exitFullscreen) document.exitFullscreen();
+  }catch(e){}
+  setTimeout(gpPlace,260);
+}
+function gpStop(){
+  GP.timer&&clearInterval(GP.timer); GP.timer=0;
+  gpLagStop();
+  GP.on=false; gpIdle(); GP.latch={}; GP.rep={}; GP.sent="";
+  // 用 beacon 而不是 fetch：页面正在被系统回收，fetch 大概率发不出去
+  try{ navigator.sendBeacon&&navigator.sendBeacon("/cmd?t="+encodeURIComponent(T)+"&c=release") }catch(e){}
+  if(GP.root) Array.prototype.forEach.call(GP.root.querySelectorAll(".on"),function(x){x.classList.remove("on")});
+}
+// 切后台/关页面：立刻叫电脑松手，别等那 900ms 看门狗
+document.addEventListener("visibilitychange",function(){ if(document.hidden&&GP.timer) gpStop() });
+addEventListener("pagehide",function(){ if(GP.timer) gpStop() });
 
 /* ---------- 打字 ---------- */
 var mods=[];
@@ -515,7 +1580,186 @@ loadPeers();
 setInterval(loadPeers,20000);
 document.addEventListener("click",function(e){
   var t=e.target;if(t.tagName==="BUTTON"&&t.classList.contains("acc"))t.classList.add("on")});
-loadPanel();sse();
+/* ---------- 装成 App（PWA）：安卓分享面板里出现 bedremote 的前提 ---------- */
+(function(){
+  // manifest 用 JS 挂：设了令牌的话 href 必须带 ?t=，否则 Chrome 取清单会被 403，App 装不上。
+  var ml=document.createElement("link");ml.rel="manifest";
+  ml.href="/manifest.webmanifest"+(T?"?t="+encodeURIComponent(T):"");
+  document.head.appendChild(ml);
+  // SW 只在 https 下注册。注意：Chrome 注册 SW 要求证书**被信任**，绕过警告页不算 ——
+  // 所以裸自签模式下这一句注定失败，是预期内的，静默忽略。
+  // 想装 App / 要分享面板：把 bedremote.json 里 ca 改成 true，再在手机上装一次 /ca.crt。
+  if(location.protocol==="https:"&&navigator.serviceWorker){
+    try{navigator.serviceWorker.register("/sw.js"+(T?"?t="+encodeURIComponent(T):"")).then(function(){SWOK="ok";paintTip()},function(){SWOK="fail";paintTip()})}catch(e){SWOK="fail";paintTip()}
+  }
+  // 分享面板 → 服务端 /share 处理完 302 回这里，把结果说一句，然后把参数抹掉（免得刷新重复打开）
+  var sh=(location.search.match(/[?&]shared=([^&]*)/)||[])[1];
+  if(sh){
+    try{sh=decodeURIComponent(sh)}catch(e){}
+    setTimeout(function(){addMsg("分享到电脑："+sh,"")},500);
+    try{history.replaceState(null,"",location.pathname+(T?"?t="+encodeURIComponent(T):""))}catch(e){}
+  }
+})();
+/* ---------- 多台电脑：认名字 + 一键换一台 ---------- */
+// 屋里一排机器时，"192.168.1.7" 和 "7号机" 的差别就是能不能用。
+// 名单从**当前这台**问出来（c=mates：电脑之间靠 UDP 心跳互相知道对方存在），
+// 再并上本机记过的地址 —— 某台没听到心跳（跨网段、刚开机）也还能一键回去。
+var MACH={list:[],me:null};
+function mEsc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function mHist(){try{var a=JSON.parse(localStorage.getItem("br.mach")||"[]");return a instanceof Array?a:[]}catch(e){return[]}}
+function mRemember(list){
+  try{
+    var h=mHist(),by={};
+    h.forEach(function(m){by[m.ip+":"+m.port]=m});
+    list.forEach(function(m){ if(m&&m.ip) by[m.ip+":"+m.port]={ip:m.ip,port:m.port,name:m.name,https:!!m.https,ts:Date.now()} });
+    var arr=[];for(var k in by)arr.push(by[k]);
+    arr.sort(function(a,b){return b.ts-a.ts});
+    localStorage.setItem("br.mach",JSON.stringify(arr.slice(0,24)));
+  }catch(e){}
+}
+function mUrl(m){
+  return (m.https?"https://":"http://")+m.ip+":"+m.port+"/" + (T?"?t="+encodeURIComponent(T):"");
+}
+function loadMates(){
+  return api("c=mates").then(function(t){
+    var d;try{d=JSON.parse(t)}catch(e){d=null}
+    MACH.list=(d instanceof Array)?d:[];
+    MACH.me=MACH.list.filter(function(m){return m.self})[0]||null;
+    mRemember(MACH.list);
+    var e=$("#mname");
+    if(e)e.textContent=MACH.me?MACH.me.name:"";
+    return MACH.list;
+  },function(){return []});
+}
+function mMerge(){
+  var out=[],by={};
+  MACH.list.forEach(function(m){ var k=m.ip+":"+m.port; by[k]=m; out.push(m) });
+  mHist().forEach(function(m){
+    var k=m.ip+":"+m.port;
+    if(by[k])return;
+    m.gone=true;
+    if(m.ip===location.hostname&&+m.port===(location.port?+location.port:80))return;  // 就是本机却已经不在名单里：别说它"没应答"
+    out.push(m);
+  });
+  out.sort(function(a,b){
+    if(a.self!==b.self)return a.self?-1:1;
+    if(!!a.gone!==!!b.gone)return a.gone?1:-1;
+    return String(a.name||a.ip).localeCompare(String(b.name||b.ip));
+  });
+  return out;
+}
+function mPaint(){
+  var box=$("#machlist");if(!box)return;
+  var l=mMerge();
+  if(!l.length){box.innerHTML='<div class="note">还没发现别的电脑。点「重新找」问一圈。</div>';return}
+  var h="";
+  l.forEach(function(m,i){
+    h+='<div class="mi'+(m.self?" cur":"")+'"><b>'+(m.self?"【当前】":"")+mEsc(m.name||m.ip)+'</b>'+
+       '<span class="tm">'+mEsc(m.ip)+':'+m.port+(m.mon?(" · "+m.mon+"屏"):"")+'</span>'+
+       (m.gone?'<span class="tm" style="color:var(--warn);border-color:var(--warn)">没应答</span>':'')+
+       (m.self?'<span class="tm">就是这台</span>':'<button data-go="'+i+'">切过去</button>')+'</div>';
+  });
+  box.innerHTML=h;
+  var bs=box.querySelectorAll("button[data-go]");
+  for(var i=0;i<bs.length;i++)bs[i].onclick=function(){
+    var m=l[+this.dataset.go];if(!m)return;
+    buzz();mRemember([m]);
+    if(!confirm("切到「"+(m.name||m.ip)+"」("+m.ip+":"+m.port+")？\n\n页面会重新加载。如果那台电脑设了**不同的令牌**，会连不上，那就在那台上把地址重扫一次。"))return;
+    location.href=mUrl(m);
+  };
+  var tip=$("#machtip");
+  if(tip)tip.textContent="名单是这些电脑自己互相打招呼凑出来的（同网段免配置）。跨网段/被交换机挡住时这里就少几台，用「重新找」单播问一圈。";
+}
+function mOpen(){ mPaint(); $("#mach").classList.add("on"); loadMates().then(mPaint) }
+window.machOpen=mOpen;   // 手柄那个"换一台"按钮要用（同一个 IIFE，但留个显式出口更好读）
+function mClose(){ $("#mach").classList.remove("on") }
+function mRename(){
+  var cur=MACH.me?MACH.me.name:"";
+  var want=prompt("这台电脑叫什么？（比如「7号机」「渲染那台」。留空 = 用 Windows 的电脑名）",cur);
+  if(want===null)return;
+  send("c=name&n="+encodeURIComponent(want));
+  setTimeout(function(){loadMates().then(mPaint)},600);
+}
+function mRescan(){
+  var tip=$("#machtip");if(tip)tip.textContent="在问这一段的 254 个地址…";
+  api("c=scan").then(function(t){
+    var d;try{d=JSON.parse(t)}catch(e){d=null}
+    if(d instanceof Array){MACH.list=d;mRemember(d)}
+    mPaint();var e=$("#mname");if(e&&MACH.me)e.textContent=MACH.me.name;
+  },function(){if(tip)tip.textContent="问不动：连不上当前这台电脑"});
+}
+function mPush(){
+  var others=mMerge().filter(function(m){return !m.self&&!m.gone});
+  if(!others.length){alert("名单里没有别的电脑（先「重新找」）");return}
+  var names=others.map(function(m){return m.name||m.ip}).join("、");
+  if(!confirm("把**这台**的面板（页签和按钮）覆盖到："+names+"\n\n只动对方的 panels 那一段，它们的端口/令牌/白名单都不动。对方机器上会留一行日志。继续？"))return;
+  send("c=push&to=all").then(function(t){ addMsg("推送结果："+t,"") });
+}
+$("#swb").onclick=function(){buzz();mOpen()};
+$("#machclose").onclick=mClose;
+$("#mrename").onclick=mRename;
+$("#mrescan").onclick=mRescan;
+$("#mpush").onclick=mPush;
+addEventListener("keydown",function(e){if(e.key==="Escape")$("#mach").classList.remove("on")});
+
+loadPanel();sse();loadMates();
+  // 顶部那条"还缺什么"：陀螺仪和"装成 App"卡的是同一件事（安全上下文 / 证书被信任），
+  // 而这两件都没法由网页替他点（浏览器不给装证书的 API）。至少把它诊断出来、按钮递到手边。
+  var installEvt=null;
+  addEventListener("beforeinstallprompt",function(e){ e.preventDefault(); installEvt=e; paintTip() });
+  addEventListener("appinstalled",function(){ installEvt=null; var b=$("#tip"); if(b)b.classList.remove("on") });
+  var standalone=false;
+  try{ standalone=(matchMedia&&matchMedia("(display-mode: standalone)").matches)||navigator.standalone===true }catch(e){}
+  function paintTip(){
+    var box=$("#tip"); if(!box) return;
+    // 这条只对"手机从局域网打开"有意义：在电脑本机上 http://127.0.0.1 本来就是安全上下文，
+    // 而且 Chrome 允许从 localhost 装 PWA，提示只会误导。
+    if(location.hostname==="127.0.0.1"||location.hostname==="localhost"){ box.classList.remove("on"); return }
+    if(standalone){ box.classList.remove("on"); return }
+    // 关掉了就别再挡手（操控类页面它真的会挡住一指宽的地方）。想再看回来在「丢过去」那页底部。
+    var off=false; try{ off=localStorage.getItem("br.tipoff")==="1" }catch(e){}
+    if(off){ box.classList.remove("on"); return }
+    var h;
+    if(location.protocol!=="https:"){
+      h='<b>现在是 http 打开的这一页。</b>陀螺仪和"装到桌面"都要 https 才给 —— 同一个端口就支持，换个协议头就行。'+
+        '<div class="row2"><button id="tipGo">用 https 打开</button></div>';
+    } else if(SWOK==="ok"){
+      h='<b>这台手机已经信任这张证书了。</b>装到桌面就有自己的图标、全屏、没有地址栏。'+
+        '<div class="row2"><button id="tipIns">装到桌面</button><button id="tipQ">没有按钮？</button></div>';
+    } else {
+      h='<b>没能确认这台手机已经信任了证书。</b>注意这条是"离线组件注册成功"推出来的，可能误报'+
+        '（无痕模式一定注册不了，所以一定误报）。真正要看的是：打开 https 时还弹不弹"不受信任"。'+
+        '<div class="row2"><button id="tipChk">到底信没信？</button><button id="tipCa">下载根证书</button><button id="tipHow">怎么装？</button></div>';
+    }
+    box.innerHTML=h+'<button id="tipX" class="x" title="关掉这条">✕</button>'; box.classList.add("on");
+    var x=$("#tipX"); if(x)x.onclick=function(){ try{localStorage.setItem("br.tipoff","1")}catch(e){}; box.classList.remove("on"); buzz() };
+    var g=$("#tipGo"); if(g)g.onclick=function(){ buzz(); location.href="https://"+location.host+location.pathname+(T?"?t="+encodeURIComponent(T):"") };
+    var c=$("#tipCa"); if(c)c.onclick=function(){ buzz(); location.href="/ca.crt"+(T?"?t="+encodeURIComponent(T):"") };
+    // 只有"整页跳过去"才能看出证书到底信没信：同源 fetch 在"点过继续访问"的页面上照样成功，
+    // 区分不出来；而整页导航要是证书没被信任，Chrome 会**再弹一次**那个警告页，一眼就看得出来。
+    var k=$("#tipChk"); if(k)k.onclick=function(){ buzz();
+      var msg='跳到 https://'+location.host+'/health\n\n看到什么就说明什么：\n· 直接显示 ok、没有警告 → 证书已经被信任了，是我这条误报\n· 又弹「不受信任」→ 证书没真正装上，回去看「怎么装？」\n\n（按返回键就回到这一页）';
+      if(confirm(msg)) location.href="/health"+(T?"?t="+encodeURIComponent(T):"") };
+    var i=$("#tipIns"); if(i)i.onclick=function(){ buzz();
+      if(installEvt&&installEvt.prompt){ installEvt.prompt(); installEvt=null }
+      else alert("Chrome 还没给出安装按钮。\n\n两种可能：\n一、证书还没被信任（先点「下载根证书」，装完刷新）；\n二、入口已经在菜单里了：右上角 ⋮ → 安装应用 / 添加到主屏幕。") };
+    var w=$("#tipHow"); if(w)w.onclick=function(){ buzz();
+      alert("装根证书的步骤（各家安卓叫法略有不同）：\n\n"+
+        "1. 点「下载根证书」，文件存到手机的下载目录\n"+
+        "2. 设置 → 安全（或「密码与安全」）→ 加密与凭据 → 安装证书 → CA 证书\n"+
+        "   小米叫「凭据存储」；华为在「安全 → 更多安全设置 → 加密和凭据」\n"+
+        "3. 选刚下载的 bedremote-ca.crt，会弹一次风险提示，确认\n"+
+        "4. 回浏览器刷新这一页，顶部会变成「已信任」并出现「装到桌面」\n\n"+
+        "说清楚：这张根证书是你这台电脑自己生成的，装进手机等于允许它冒充任何 https 网站。"+
+        "它只在你自己的局域网里有意义。不想装也行 —— 陀螺仪不需要它，只有装成 App 才需要。") };
+    var q=$("#tipQ"); if(q)q.onclick=function(){ buzz();
+      if(location.protocol==="https:"&&navigator.serviceWorker&&SWOK!=="ok"){
+        navigator.serviceWorker.register("/sw.js"+(T?"?t="+encodeURIComponent(T):"")).then(function(){SWOK="ok";paintTip()},function(){alert("还是不行：说明这张证书在系统里没被真正信任。重装一次，注意要按「CA 证书」装，别装成「VPN 和应用用户证书」。")});
+      } else alert("翻 Chrome 菜单：右上角 ⋮ → 安装应用 / 添加到主屏幕。") };
+  }
+  // 关掉了要在别处能再打开（整页是个 IIFE，外面拿不到 paintTip，所以递一个函数出去）
+  window.reShowTip=function(){ try{localStorage.setItem("br.tipoff","0")}catch(e){}; paintTip() };
+  paintTip();
 })();
 </script>
 </body>

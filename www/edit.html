@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>bedremote 面板编辑器</title>
 <style>
 :root{--bg:#14151a;--p:#1c1d24;--k:#24262f;--line:#33353f;--fg:#e6e6ea;--dim:#8b8d99;--acc:#4da3ff;--ok:#3ddc84;--bad:#ff6b6b;--warn:#ffb454}
@@ -32,6 +33,18 @@ tr.b{border-top:1px solid var(--line)}
 dialog{background:var(--p);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:16px;width:min(820px,92vw)}
 dialog::backdrop{background:rgba(0,0,0,.6)}
 .kk{display:inline-block;background:var(--k);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin:2px;font-size:12px}
+/* 手机上也能改按钮：以前这页只能电脑看（没 viewport、侧栏固定 200px），
+   而"人不在机器前"恰恰是这台工具的前提。窄屏就竖着堆，点得到比好看重要。 */
+@media (max-width:760px){
+ main{grid-template-columns:1fr;min-height:0}
+ #tabs{border-right:none;border-bottom:1px solid var(--line);display:flex;gap:6px;overflow-x:auto;padding:8px}
+ #tabs .tt{flex:0 0 auto;margin-bottom:0;white-space:nowrap}
+ #body{padding:10px}
+ header{padding:8px 10px}
+ button,select,input,textarea{min-height:38px}
+ td{padding:4px 3px}
+ #json{height:44vh}
+}
 </style>
 </head>
 <body>

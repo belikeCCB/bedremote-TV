@@ -25,3 +25,7 @@ www/vendor/_dev_*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# 开发时的截图/测试产物，不进仓库（里面有本机局域网地址）
+tools/*.png
+tools/*.txt

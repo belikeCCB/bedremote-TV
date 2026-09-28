@@ -246,8 +246,60 @@ static class Config
     // DDC/CI 熄灭某块屏。**默认关**：有些面板"软关"之后连 DDC 通道一起断，
     // 命令叫不醒它，只能人起身拔线重插（本机主屏实测就是这么坑）。要开自己去 json 里打开。
     public static bool AllowDdcOff = false;
+    /// <summary>
+    /// 关掉一块屏之后多少秒自动接回来；0 = 永不（默认）。
+    /// 这个必须是**服务端**策略：以前是手机页带 sec=20 过来，服务端照着办，
+    /// 结果手机页面是旧版就一直"关不住"（实测日志：off:已摘掉，将在 20 秒后自动接回 → [auto-wake]）。
+    /// 客户端的 sec 参数只在服务端也开了的时候才生效。
+    /// </summary>
+    public static int AutoWakeSec = 0;
+    /// <summary>
+    /// 「丢到电脑」开关：手机把一个 http(s) 链接推过来，电脑用默认浏览器打开。
+    /// 默认开 —— 它比"手机能控制你的鼠标键盘"轻得多，但确实是"局域网里任何设备都能让这台电脑开网页"，
+    /// 所以留了这个闸，并且每一次打开都写进日志（界面上看得见是谁丢的）。
+    /// </summary>
+    public static bool AllowOpen = true;
+    /// <summary>
+    /// 同一个端口上再吃一路 HTTPS（自签证书）。默认开。
+    /// 不是为了"加密"——局域网里那层加密意义有限；是为了手机浏览器肯把
+    /// 陀螺仪、剪贴板、屏幕常亮这几样敏感能力交出来（非安全上下文里它们根本不触发）。
+    /// 证书生成失败会自动退回纯明文，服务不会起不来。
+    /// </summary>
+    public static bool Https = true;
+    /// <summary>
+    /// 用**自建根 CA** 签证书，而不是一张裸自签。
+    /// 差别只在一件事上：Chrome 注册 Service Worker 要求证书被**信任**（绕过警告页不算），
+    /// 所以想装成 App、想让安卓分享面板里出现 bedremote，就得开这个，然后在手机上装一次
+    /// `http://&lt;电脑&gt;:8765/ca.crt`。默认关 —— 装根证书是个安全决定，得他自己做。
+    /// </summary>
+    public static bool Ca = false;
     public static Dictionary<string, string> Run = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// 哪些 run 条目走"提权通行证"（计划任务，见 src\Passes.cs）。
+    /// 这里只是**点名**；证要在界面里办一次（一次 UAC），没办证的条目按普通方式跑、该弹框还是弹框。
+    /// 例：`"elevatedRun": ["某某软件"]`
+    /// </summary>
+    public static List<string> ElevatedRun = new List<string>();
     public static Dictionary<string, object> Panels = null;
+    public static Dictionary<string, object> Gamepad = null;
+
+    // 多机场景下"192.168.1.7"和"ESWIN"这种名字人记不住，所以机器和每块屏都能起别名。
+    // 屏名按 uid 存（设备路径里那个稳定号），换接口/换分辨率不会张冠李戴。
+    public static string Name = "";
+    public static Dictionary<string, string> ScreenNames = new Dictionary<string, string>();
+
+    public static string NameOrMachine()
+    {
+        if (!string.IsNullOrEmpty(Name)) return Name;
+        try { return Environment.MachineName; } catch { return "bedremote"; }
+    }
+
+    public static string ScreenName(string uid, string fallback)
+    {
+        string v;
+        if (uid != null && ScreenNames != null && ScreenNames.TryGetValue(uid, out v) && !string.IsNullOrEmpty(v)) return v;
+        return fallback;
+    }
     public static string Path = "";
     public static bool Loaded = false;
 
@@ -257,7 +309,11 @@ static class Config
   ""keepAwake"": true,
   ""denyWhenLocked"": true,
   ""ddcOff"": false,
-  ""run"": { ""声音设置"": ""start ms-settings:sound"" },
+  ""autoWakeSec"": 0,
+  ""allowOpen"": true,
+  ""https"": true,
+  ""ca"": false,
+  ""run"": { ""声音设置"": ""start ms-settings:sound"", ""显示设置"": ""start ms-settings:display"", ""切屏面板"": ""start DisplaySwitch.exe"" },
   ""panels"": {
     ""tabs"": [
       {
@@ -319,9 +375,33 @@ static class Config
             KeepAwake = Json.Bool(Json.Get(root, "keepAwake"), KeepAwake);
             DenyWhenLocked = Json.Bool(Json.Get(root, "denyWhenLocked"), DenyWhenLocked);
             AllowDdcOff = Json.Bool(Json.Get(root, "ddcOff"), AllowDdcOff);
+            AllowOpen = Json.Bool(Json.Get(root, "allowOpen"), AllowOpen);
+            Https = Json.Bool(Json.Get(root, "https"), Https);
+            Ca = Json.Bool(Json.Get(root, "ca"), Ca);
+            AutoWakeSec = (int)Json.Num(Json.Get(root, "autoWakeSec"), AutoWakeSec);
+            if (AutoWakeSec < 0) AutoWakeSec = 0;
+            if (AutoWakeSec > 3600) AutoWakeSec = 3600;
             Run = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var kv in Json.Obj(Json.Get(root, "run"))) Run[kv.Key] = Json.Str(kv.Value, "");
+            ElevatedRun = new List<string>();
+            object er = Json.Get(root, "elevatedRun");
+            if (er != null)
+                foreach (var o in Json.Arr(er))
+                {
+                    string nm = Json.Str(o, "").Trim();
+                    if (nm.Length > 0 && !ElevatedRun.Contains(nm)) ElevatedRun.Add(nm);
+                }
             Panels = Json.Obj(Json.Get(root, "panels"));
+            Gamepad = Json.Obj(Json.Get(root, "gamepad"));
+            Name = Json.Str(Json.Get(root, "name"), "").Trim();
+            ScreenNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            object sn = Json.Get(root, "screenNames");
+            if (sn != null)
+                foreach (var kv in Json.Obj(sn))
+                {
+                    string nm = Json.Str(kv.Value, "").Trim();
+                    if (kv.Key.Length > 0 && nm.Length > 0) ScreenNames[kv.Key] = nm.Length > 40 ? nm.Substring(0, 40) : nm;
+                }
             Loaded = true;
         }
         catch (Exception ex)
@@ -329,6 +409,9 @@ static class Config
             Error = "配置解析失败，已退回内置面板：" + ex.Message;
             var root = Json.Obj(Json.Parse(DefaultJson));
             Panels = Json.Obj(Json.Get(root, "panels"));
+            Gamepad = new Dictionary<string, object>();
+            Name = "";
+            ScreenNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
         if (Port < 1 || Port > 65535) Port = 8765;
     }
@@ -353,4 +436,204 @@ static class Config
     }
 
     public static string PanelsJson() { return Json.Write(Panels ?? new Dictionary<string, object>()); }
+
+    static int CountWidgets(object arr)
+    {
+        if (arr == null) return 0;
+        try { return Json.Arr(arr).Count; } catch { return 0; }
+    }
+
+    // 改一个顶层键的公共流程：读文件 → 解析 → 只动那一个键 → 写回（UTF-8 无 BOM）。
+    // val 传 null 表示删掉这个键，回到内置默认。
+    static bool Mutate(string key, object val, out string err)
+    {
+        err = null;
+        try
+        {
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            if (val == null) root.Remove(key); else root[key] = val;
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
+    }
+
+    public static bool SetName(string name, out string err)
+    {
+        name = (name ?? "").Trim();
+        if (name.Length > 40) name = name.Substring(0, 40);
+        Name = name;
+        return Mutate("name", name.Length == 0 ? null : (object)name, out err);
+    }
+
+    // 给某块屏起别名；传空字符串 = 删掉别名，回到显示器的出厂型号名。
+    public static bool SetScreenName(string uid, string alias, out string err)
+    {
+        err = null;
+        if (string.IsNullOrEmpty(uid)) { err = "没有这块屏的编号"; return false; }
+        alias = (alias ?? "").Trim();
+        if (alias.Length > 40) alias = alias.Substring(0, 40);
+        if (alias.Length == 0) ScreenNames.Remove(uid); else ScreenNames[uid] = alias;
+        var obj = new Dictionary<string, object>();
+        foreach (var kv in ScreenNames) obj[kv.Key] = kv.Value;
+        return Mutate("screenNames", obj.Count == 0 ? null : (object)obj, out err);
+    }
+
+    // 手机当手柄的布局：存这里只是为了换手机/重装还能拿回来，电脑端不解释它的内容
+    // （只有手机页读它）。坐标一律是 0..1 的比例，所以不同尺寸/横竖屏都能套。
+    public static string GamepadJson() { return Json.Write(Gamepad ?? new Dictionary<string, object>()); }
+
+    public static bool SaveGamepad(string layoutJson, out string err)
+    {
+        err = null;
+        try
+        {
+            var g = Json.Obj(Json.Parse(layoutJson ?? "{}"));
+            // 收得紧一点：这个键是远程可写的，塞个几百 KB 进去就会把配置文件撑爆。
+            // 现在的形状是 profiles:{名字:{widgets:[...]}}，老形状是顶层 widgets:[...]，两种都限。
+            int max = 0;
+            object profs = Json.Get(g, "profiles");
+            if (profs != null)
+            {
+                var ps = Json.Obj(profs);
+                if (ps.Count > 24) { err = "预设太多（" + ps.Count + " > 24）"; return false; }
+                foreach (var kv in ps) max = Math.Max(max, CountWidgets(Json.Get(Json.Obj(kv.Value), "widgets")));
+            }
+            max = Math.Max(max, CountWidgets(Json.Get(g, "widgets")));
+            if (max > 64) { err = "一套布局里控件太多（" + max + " > 64）"; return false; }
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            root["gamepad"] = g;
+            Gamepad = g;
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
+    }
+
+    // 图形界面改开关用这个：解析 → 只换那一个键 → 写回，别在界面里做字符串手术。
+    public static bool SetBool(string key, bool val, out string err)
+    {
+        err = null;
+        try
+        {
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            root[key] = val;
+            if (key == "denyWhenLocked") DenyWhenLocked = val;
+            else if (key == "keepAwake") KeepAwake = val;
+            else if (key == "ddcOff") AllowDdcOff = val;
+            else if (key == "allowOpen") AllowOpen = val;
+            else if (key == "https") Https = val;
+            else if (key == "ca") Ca = val;
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
+    }
+
+    // 加/改一条 run 白名单（「往手机上加个软件」向导用，省得用户手改 JSON）
+    public static bool SetRun(string name, string cmd, out string err)
+    {
+        err = null;
+        try
+        {
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            var run = Json.Obj(Json.Get(root, "run"));
+            run[name] = cmd;
+            root["run"] = run;
+            Run[name] = cmd;
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
+    }
+
+    // 往手机面板里加一个 run 按钮：分组固定叫「我的软件」（没有就建一个），页签不存在就新建页签。
+    public static bool AddRunButton(string tabName, string label, string runName, string sub, out string err)
+    {
+        err = null;
+        try
+        {
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            var panels = Json.Obj(Json.Get(root, "panels"));
+            var tabs = Json.Arr(Json.Get(panels, "tabs"));
+            Dictionary<string, object> tab = null;
+            for (int i = 0; i < tabs.Count; i++)
+            {
+                var t = Json.Obj(tabs[i]);
+                if (string.Equals(Json.Str(Json.Get(t, "name"), ""), tabName, StringComparison.OrdinalIgnoreCase)) { tab = t; break; }
+            }
+            if (tab == null) { tab = new Dictionary<string, object>(); tab["name"] = tabName; tabs.Add(tab); }
+            var groups = Json.Arr(Json.Get(tab, "groups"));
+            Dictionary<string, object> grp = null;
+            for (int i = 0; i < groups.Count; i++)
+            {
+                var g = Json.Obj(groups[i]);
+                if (string.Equals(Json.Str(Json.Get(g, "title"), ""), "我的软件", StringComparison.OrdinalIgnoreCase)) { grp = g; break; }
+            }
+            if (grp == null)
+            {
+                grp = new Dictionary<string, object>();
+                grp["title"] = "我的软件"; grp["cols"] = 2; grp["buttons"] = new List<object>();
+                groups.Add(grp);
+            }
+            var btns = Json.Arr(Json.Get(grp, "buttons"));
+            var b = new Dictionary<string, object>();
+            b["label"] = label;
+            if (!string.IsNullOrEmpty(sub)) b["sub"] = sub;
+            b["act"] = "run"; b["name"] = runName;
+            btns.Add(b);
+            grp["buttons"] = btns;
+            tab["groups"] = groups;
+            panels["tabs"] = tabs;
+            root["panels"] = panels;
+            Panels = panels;
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
+    }
+
+    // 数字项（如 autoWakeSec）同上；传负数表示"删掉这一项，回到内置默认"
+    public static bool SetNum(string key, int val, out string err)
+    {
+        err = null;
+        try
+        {
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            if (val < 0) root.Remove(key); else root[key] = val;
+            if (key == "autoWakeSec" && val >= 0) AutoWakeSec = val;
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
+    }
+
+    // 字符串数组项（目前只有 elevatedRun）：界面里"点名"用，不让用户手改 JSON。
+    public static bool SetList(string key, List<string> items, out string err)
+    {
+        err = null;
+        try
+        {
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            var arr = new List<object>();
+            for (int i = 0; i < items.Count; i++)
+                if (items[i] != null && items[i].Trim().Length > 0) arr.Add(items[i].Trim());
+            root[key] = arr;
+            if (key == "elevatedRun")
+            {
+                ElevatedRun = new List<string>();
+                for (int i = 0; i < arr.Count; i++) ElevatedRun.Add((string)arr[i]);
+            }
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
+    }
 }

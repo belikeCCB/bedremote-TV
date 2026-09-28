@@ -106,7 +106,7 @@ function render(a) {
   var primary = a.ips[0], others = a.ips.slice(1);
   var suffix = a.token ? '/?t=' + encodeURIComponent(a.token) : '';
   var mk = function (ip, alt) {
-    var url = 'http://' + ip + ':' + a.port + suffix;
+    var url = (a.https ? 'https://' : 'http://') + ip + ':' + a.port + suffix;
     var n = (function () { var q = qrcode(0, 'M'); q.addData(url); q.make(); return q.getModuleCount(); })();
     var cell = alt ? 6 : cellSize(n);
     return '<div class="card' + (alt ? ' alt' : '') + '">' + svgFor(url, cell) +
@@ -120,7 +120,9 @@ function render(a) {
     note.innerHTML = '<b style="color:#ff5a5a">这台电脑现在没有局域网地址，手机连不上。</b>' +
       '先让它连上路由器的 Wi-Fi（或插网线）；要用手机热点的话，让电脑连手机热点后刷新本页。';
   }
-  document.getElementById('tok').textContent = a.token ? '已开启令牌（二维码里已带上）' : '';
+  document.getElementById('tok').textContent =
+    (a.token ? '已开启令牌（二维码里已带上）' : '') +
+    (a.https ? '　·　码里是 HTTPS：自签证书，手机第一次会警告，点「高级 → 继续访问」就行（陀螺仪、读剪贴板要靠它）' : '');
 }
 // 在线状态 + 设备台账：每次都刷，不受"地址有没有变"影响
 function renderStatus(a) {
