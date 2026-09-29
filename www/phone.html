@@ -198,13 +198,58 @@ body.gpf #gp{height:100%;border:none;border-radius:0}
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 // 页面自己的版本号。服务端版本比它新就说明"你手里这个标签页是旧的"，自动刷一次。
 // 不加这个的话，我改了行为你却还在跑旧 JS，看起来就像"功能坏了/关不上"——今晚真的踩过。
-var BUILD="0.12.1";
+var BUILD="0.13.0";
+// ---------- 这台手机的设备编号 ----------
+// 口令是一把共用钥匙：给出去收不回来，而且电脑上分不清"这台是谁"。
+// 所以第一次带正确口令进来时，电脑顺手把这一串编号记下来（=配对）；以后不用再输口令，
+// 而主人在电脑上想踢谁就删谁 —— 删了这串编号，这台就得重新扫码才进得来。
+// 编号存在这台浏览器的 localStorage 里：换浏览器 / 清了站点数据就要重新配对，这是应该的。
+var DEV=(function(){
+  try{
+    var v=localStorage.getItem("br.dev");
+    if(v&&/^[A-Za-z0-9_-]{8,64}$/.test(v))return v;
+    var a=new Uint8Array(12),c=self.crypto;
+    if(c&&c.getRandomValues)c.getRandomValues(a);
+    else for(var i=0;i<a.length;i++)a[i]=(Math.random()*256)|0;
+    var s="";for(var j=0;j<a.length;j++)s+=("0"+a[j].toString(16)).slice(-2);
+    localStorage.setItem("br.dev",s);
+    return s;
+  }catch(e){return ""}          // 隐私模式禁用 localStorage：没编号就当没这档事，口令照样能用
+})();
+// 名单上给人看的名字。要的是"一眼认出是哪台"，不是设备型号全称。
+var DEVN=(function(){
+  try{
+    var v=localStorage.getItem("br.devn");
+    if(v)return v;
+    var u=navigator.userAgent||"";
+    var os=/iPhone|iPod/.test(u)?"iPhone":/iPad/.test(u)?"iPad":/Android/.test(u)?
+        (parseFloat((u.match(/Android ([0-9.]+)/)||[])[1])>=13?"安卓":"安卓(旧)")
+      :/Windows NT 10/.test(u)?"Windows":/Windows/.test(u)?"Windows(旧)":/Mac OS X/.test(u)?"macOS":/Linux/.test(u)?"Linux":"设备";
+    var br=/Edg\//.test(u)?"Edge":/OPR\//.test(u)?"Opera":/MiuiBrowser/.test(u)?"小米浏览器":
+        /UCBrowser/.test(u)?"UC":/Chrome\//.test(u)?"Chrome":/Safari\//.test(u)?"Safari":"浏览器";
+    var sa="";try{if(matchMedia&&matchMedia("(display-mode: standalone)").matches)sa="App·"}catch(e){}
+    var n=os+" "+br;
+    if(!/touch/i.test(u)&&!/iP(hone|ad|od)/.test(u))n+="（没触摸）";   // 电视/电脑浏览器多半是鼠标
+    n=sa+n;
+    localStorage.setItem("br.devn",n);
+    return n;
+  }catch(e){return "未命名设备"}
+})();
+var AUTH="t="+encodeURIComponent(T)+"&d="+encodeURIComponent(DEV)+"&dn="+encodeURIComponent(DEVN);
+var BLOCKED="";             // 非空 = 这台已经被踢掉/口令作废了，别再重连刷屏
+function blocked(t){
+  BLOCKED=t;
+  try{if(es)es.close()}catch(e){}
+  $("#offmsg").textContent=t;
+  $("#off").classList.add("on");
+}
 var $=function(s){return document.querySelector(s)};
 var main=$("#main"), nav=$("#nav");
 var buzz=function(m){try{navigator.vibrate&&navigator.vibrate(m||12)}catch(e){}};
 
 function api(p){
-  return fetch("/cmd?t="+encodeURIComponent(T)+"&"+p,{cache:"no-store"}).then(function(r){
+  return fetch("/cmd?"+AUTH+"&"+p,{cache:"no-store"}).then(function(r){
+    if(r.status===403){blocked("这台设备已经不在名单里了（主人改了口令或把你踢了）。\n要让电脑上的「门禁」那一栏重新给你一次：扫码，或让它带上新地址打开。");throw new Error("http403");}
     if(!r.ok) throw new Error("http"+r.status);
     return r.text();
   });
@@ -219,6 +264,9 @@ function send(p){
 /* ---------- 连接 ---------- */
 function offline(v){
   $("#dot").className=v?"":"good";
+  // 被踢了/口令作废了：那是"没权限"，不是"网断了"。别让它每 2 秒把话改回连不上电脑，
+  // 也别让 EventSource 每 0.8 秒重连一次 —— 那种"数字不跳但也没报错"最难查。
+  if(BLOCKED){$("#offmsg").textContent=BLOCKED;$("#off").classList.add("on");return;}
   if(v){$("#offmsg").textContent="连不上电脑：PC 上的 bedremote 还开着吗 / 手机和 PC 在同一个路由器吗 / 防火墙放行了吗";$("#off").classList.add("on");}
   else $("#off").classList.remove("on");
 }
@@ -233,7 +281,8 @@ setInterval(ping,2000);ping();
 var es=null,unseen=0,curTab=0;
 function sse(){
   try{if(es)es.close()}catch(e){}
-  es=new EventSource("/events?t="+encodeURIComponent(T));
+  if(BLOCKED)return;
+  es=new EventSource("/events?"+AUTH);
   es.onmessage=function(m){
     var d;try{d=JSON.parse(m.data)}catch(e){return}
     if(d.e==="win")$("#win").textContent=d.t||"（无标题窗口）";
@@ -247,6 +296,8 @@ function sse(){
     else if(d.e==="lag")gpLagGot(d.t0,+d.srv||0);
     else if(d.e==="mons")loadMons();
     else if(d.e==="peers")showPeers(d);
+    else if(d.e==="kick")blocked("主人在电脑上把这台设备从名单里踢掉了。要回来：让他在「门禁」那一栏重新给你一次二维码。");
+    else if(d.e==="tok")showLock("电脑上的口令刚刚改过了 —— 这个页面马上就会不再被认，要用新地址重新打开一次",true);
     else if(d.e==="ver"){
       // 服务端比这个标签页新 → 自己刷一次（sessionStorage 保证只刷一次，不会来回刷）
       try{
@@ -292,7 +343,7 @@ function fire(b){
 /* ---------- 配置面板渲染 ---------- */
 var panels=null;
 function loadPanel(){
-  fetch("/panel?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){return r.json()}).then(function(p){
+  fetch("/panel?"+AUTH,{cache:"no-store"}).then(function(r){return r.json()}).then(function(p){
     panels=p;try{localStorage.setItem("br_panel",JSON.stringify(p))}catch(e){}
     render();
   },function(){
@@ -902,7 +953,7 @@ function gpCur(){ return GP.set.profiles[GP.set.active] }
 function gpTouched(){ GP.set.ts=Date.now(); try{ localStorage.setItem("br.gp",JSON.stringify(GP.set)) }catch(e){} }
 function gpLocalSet(){ try{ var x=JSON.parse(localStorage.getItem("br.gp")||"null"); return x?gpFixSet(x):null }catch(e){ return null } }
 function gpLoad(cb){
-  fetch("/gamepad?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){
+  fetch("/gamepad?"+AUTH,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){
     var pc=d?gpFixSet(d):null, ph=gpLocalSet(), s=pc, src="电脑上的";
     if(ph&&(!pc||ph.ts>pc.ts)){ s=ph; src="本机这份比电脑新" }
     if(!s){ s=gpFixSet(null); src="内置的" }
@@ -915,7 +966,7 @@ function gpLoad(cb){
 function gpSaveLayout(toPc,silent){
   gpTouched();
   if(!toPc) return;
-  fetch("/gamepad/save?t="+encodeURIComponent(T),{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+  fetch("/gamepad/save?"+AUTH,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"j="+encodeURIComponent(JSON.stringify(GP.set)),cache:"no-store"})
     .then(function(r){ gpMsg(r.ok?"已存到电脑（预设「"+GP.set.active+"」共 "+Object.keys(GP.set.profiles).length+" 套）":"存到电脑失败："+r.status) },
           function(){ if(!silent) gpMsg("存到电脑失败：连不上") });
@@ -1506,7 +1557,7 @@ function gpStop(){
   gpLagStop();
   GP.on=false; gpIdle(); GP.latch={}; GP.rep={}; GP.sent="";
   // 用 beacon 而不是 fetch：页面正在被系统回收，fetch 大概率发不出去
-  try{ navigator.sendBeacon&&navigator.sendBeacon("/cmd?t="+encodeURIComponent(T)+"&c=release") }catch(e){}
+  try{ navigator.sendBeacon&&navigator.sendBeacon("/cmd?"+AUTH+"&c=release") }catch(e){}
   if(GP.root) Array.prototype.forEach.call(GP.root.querySelectorAll(".on"),function(x){x.classList.remove("on")});
 }
 // 切后台/关页面：立刻叫电脑松手，别等那 900ms 看门狗
@@ -1643,7 +1694,7 @@ function djSection(){
 }
 function wireDj(s){
   DJ.au=DJ.au||el("audio"); DJ.au.id="djau"; DJ.au.style.display="none"; document.body.appendChild(DJ.au);
-  function j(p){ return fetch("/cmd?t="+encodeURIComponent(T)+"&c="+p,{cache:"no-store"}).then(function(r){return r.json()}) }
+  function j(p){ return fetch("/cmd?"+AUTH+"&c="+p,{cache:"no-store"}).then(function(r){return r.json()}) }
   function djPick(u,n){
     if(!u) return;
     DJ.src=u; DJ.name=n||u.slice(0,40);
@@ -1719,7 +1770,7 @@ function wireDj(s){
     // 直播流没有可比的"第几秒"（两边各挂在时间轴尾巴上），报 0 让电脑那边只做"一起播/一起停"
     var p=live?"0":(DJ.au.currentTime+ahead).toFixed(3), pl=(!DJ.au.paused&&!DJ.au.ended)?"1":"0";
     var t0=Date.now();
-    fetch("/cmd?t="+encodeURIComponent(T)+"&c=djbeat&pos="+p+"&play="+pl+"&live="+live+"&u="+encodeURIComponent(DJ.src)+"&n="+encodeURIComponent(DJ.name),{cache:"no-store"})
+    fetch("/cmd?"+AUTH+"&c=djbeat&pos="+p+"&play="+pl+"&live="+live+"&u="+encodeURIComponent(DJ.src)+"&n="+encodeURIComponent(DJ.name),{cache:"no-store"})
       .then(function(){ DJ.rtt=Date.now()-t0 })
       .catch(function(){});
   }
@@ -1734,7 +1785,7 @@ function wireDj(s){
   }
   function nudge(ms){
     DJ.off+=ms;
-    fetch("/cmd?t="+encodeURIComponent(T)+"&c=djoff&ms="+DJ.off,{cache:"no-store"});
+    fetch("/cmd?"+AUTH+"&c=djoff&ms="+DJ.off,{cache:"no-store"});
     buzz();
   }
   $("#djgo").onclick=function(){ buzz(); djLoad(); if(!DJ.src){ djMsg("先点一首"); return }
@@ -1743,7 +1794,7 @@ function wireDj(s){
   $("#djpause").onclick=function(){ buzz(); if(DJ.au){ DJ.au.paused?DJ.au.play():DJ.au.pause() } beat() };
   $("#djopen").onclick=function(){ buzz();
     var u=location.protocol+"//"+location.hostname+":"+location.port+"/dj"+(T?"?t="+encodeURIComponent(T):"");
-    fetch("/cmd?t="+encodeURIComponent(T)+"&c=open&u="+encodeURIComponent(u),{cache:"no-store"});
+    fetch("/cmd?"+AUTH+"&c=open&u="+encodeURIComponent(u),{cache:"no-store"});
     djMsg("电脑浏览器应该已经打开那页了") };
   $("#djreload").onclick=function(){ buzz(); djList() };
   var box=$("#dju");
@@ -1761,7 +1812,7 @@ function wireDj(s){
   $("#djEarly").onclick=function(){ nudge(20) };
   var vv=$("#djvol"), vl=$("#djvolv");
   if(vv) vv.oninput=function(){ if(vl) vl.textContent=Math.round(vv.value*100)+"%";
-    fetch("/cmd?t="+encodeURIComponent(T)+"&c=djvol&v="+vv.value,{cache:"no-store"}) };
+    fetch("/cmd?"+AUTH+"&c=djvol&v="+vv.value,{cache:"no-store"}) };
   j("djstate").then(function(d){ if(typeof d.off==="number") DJ.off=d.off });
   djRecent(); djList();
 }
@@ -1778,7 +1829,7 @@ $("#fsb").onclick=function(){buzz();var d=document.documentElement;
       ? "iPhone 的 Safari 不允许网页全屏。\n\n想要没有地址栏的样子：分享 → 添加到主屏幕，然后从那个图标进来。\n（「手柄」那一页本来就自带沉浸模式，进去会把上下的东西都藏掉）"
       : "这个浏览器不支持网页全屏。"); return }
   try{ f.call(d) }catch(e){} };
-$("#editb").onclick=function(){buzz();window.open("/edit?t="+encodeURIComponent(T),"_blank")};
+$("#editb").onclick=function(){buzz();window.open("/edit?"+AUTH,"_blank")};
 
 /* ---------- 邀请别的设备（常态二维码）+ 几台在控制 ---------- */
 // 已经连上的手机自己就能出码：后来的人扫这个码，不用碰电脑也不用输地址，直接进来。
@@ -1815,7 +1866,7 @@ function showPeers(d){
   box.innerHTML=h||"<div>目前只有你一台外部设备</div>";
 }
 function loadPeers(){
-  fetch("addr?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){
+  fetch("addr?"+AUTH,{cache:"no-store"}).then(function(r){
     if(!r.ok)throw 0;return r.json();
   }).then(function(a){showPeers({n:a.devs||0,list:a.peers||[]})}).catch(function(){});
 }

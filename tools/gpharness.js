@@ -77,6 +77,10 @@ function run(htmlPath) {
   const ctx = {
     console, JSON, Math, Object, Array, String, Number, Date, encodeURIComponent, decodeURIComponent, RegExp, parseInt, parseFloat, isNaN,
     T: 'tk',
+    // 手机页现在把所有请求都拼成一条 AUTH（t + 设备编号 d + 设备名 dn）。
+    // 这个假 DOM 只喂「手柄」那一段代码，段外声明的变量在这儿必须也有，
+    // 否则一跑就是 AUTH is not defined（gpfitcheck 就是这么抓到的）。
+    AUTH: 't=tk&d=harnessdevice&dn=harness',
     $: byId,
     el: mkNode,
     buzz() { },

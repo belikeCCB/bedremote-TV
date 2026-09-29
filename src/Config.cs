@@ -537,6 +537,16 @@ static class Config
         catch (Exception ex) { err = ex.Message; return false; }
     }
 
+    // 口令：界面里改了要**立刻生效**，所以除了写文件还要让运行时跟着换（见 Program.ApplyToken）。
+    // 这里故意不删键：token 为空也把它写成 ""，这样 bedremote.example.json 里那一行对得上，
+    // 想知道"口令在哪配"的人打开配置文件一眼就能看到。
+    public static bool SetToken(string tok, out string err)
+    {
+        tok = (tok ?? "").Trim();
+        Token = tok;
+        return Mutate("token", (object)tok, out err);
+    }
+
     // 图形界面改开关用这个：解析 → 只换那一个键 → 写回，别在界面里做字符串手术。
     public static bool SetBool(string key, bool val, out string err)
     {

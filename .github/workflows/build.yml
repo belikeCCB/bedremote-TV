@@ -41,11 +41,16 @@ jobs:
             Stop-Process -Name bedremote -Force -ErrorAction SilentlyContinue
           }
 
+      - name: 门禁回归（tools\secauth.ps1：自己起一个沙箱实例，端口/数据目录都是临时的）
+        shell: pwsh
+        run: ./tools/secauth.ps1 -Exe ./bedremote.exe
+
       - name: 示例配置必须还能被真的 Config.Load 读懂（cfgprobe，带负对照见 CONTRIBUTING）
         shell: pwsh
         run: |
           $csc = "${env:WINDIR}\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          $src = @('Apps','Config','Display','Gui','Mates','Passes','Tls','Wizard','BedRemote') | ForEach-Object { "src\$_.cs" }
+          # 这份清单必须跟 build.ps1 一致：少一个文件就是"引用得到但没编进来"，整步编译失败。
+          $src = @('Apps','Audio','Config','Devices','Display','Gui','Mates','Passes','Tls','Wizard','BedRemote') | ForEach-Object { "src\$_.cs" }
           & $csc -nologo -codepage:65001 -platform:x64 -main:CfgProbe -r:System.Windows.Forms.dll -r:System.Drawing.dll -out:cfgprobe.exe ($src + @('tools\cfgprobe.cs'))
           if ($LASTEXITCODE -ne 0) { throw 'cfgprobe 编译失败' }
           $d = Join-Path $env:TEMP 'cfgexample'

@@ -507,6 +507,7 @@ sealed class Sse
     public readonly Stream Stream;            // 明文是 NetworkStream，走了 TLS 就是 SslStream
     public readonly Guid Id;
     public volatile bool Dead;
+    public string Dev = "";                   // 这条连接属于哪台设备（踢人的时候按它找，见 Devs）
     public Sse(Stream s) { Stream = s; Id = Guid.NewGuid(); }
 }
 
@@ -520,13 +521,15 @@ static class Program
     static string DataDir = "";
     static long Started = 0;
     static volatile bool Awake = true;
-    internal const string Version = "bedremote 0.12.1";
+    internal const string Version = "bedremote 0.13.0";
 
     static void Help()
     {
         Log(Version);
-        Log("用法: bedremote.exe [--port=8765] [--token=xxxx] [--help] [--version]");
+        Log("用法: bedremote.exe [--port=8765] [--token=xxxx] [--data=目录] [--help] [--version]");
         Log("配置文件: 程序同目录下的 bedremote.json（端口、令牌、面板按钮都在里面）");
+        Log("数据目录: 默认 %LOCALAPPDATA%\\bed-remote（证书/配对名单/通行证），--data= 可以指到别处");
+        Log("口令/踢设备: 双击 exe 进界面，「门禁」那一栏（改口令当场生效，不用重启）");
         Log("面板编辑器: 浏览器打开 http://127.0.0.1:<端口>/edit");
         Log("按屏控制: /cmd?c=mons 列屏；c=blank&mt=<屏id>[&sec=20][&m=ddc] 让某块屏无信号；c=wake&mt=<屏id> 接回来");
     }
@@ -598,11 +601,12 @@ static class Program
 
         // 双击 = 图形界面（一个窗口 + 托盘）。--console / --service 才是原来的无界面服务模式。
         // --port= 与 --token= 只改参数，不切模式：界面也能跑在别的端口上（测试、多实例）。
-        int cliPort = 0; string cliToken = null; bool gui = true;
+        int cliPort = 0; string cliToken = null; string cliData = null; bool gui = true;
         foreach (var a in args)
         {
             if (a.StartsWith("--port=")) { int.TryParse(a.Substring(7), out cliPort); }
             else if (a.StartsWith("--token=")) { cliToken = a.Substring(8); }
+            else if (a.StartsWith("--data=")) { cliData = a.Substring(7); }
             else if (a == "--help" || a == "-h") { Help(); return 0; }
             else if (a == "--version" || a == "-v") { Log(Version); return 0; }
             else if (a == "--console" || a == "--no-gui" || a == "--service") gui = false;
@@ -619,8 +623,13 @@ static class Program
         Started = DateTime.Now.Ticks;
 
         WwwDir = Path.Combine(exeDir, "www");
-        DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "bed-remote");
+        // 数据目录（证书、配对名单、通行证、最后一次回复）默认跟着当前用户。
+        // --data= 是给测试和"想插 U 盘随身带"的人留的口子：不指回来就用默认，什么都不变。
+        DataDir = string.IsNullOrEmpty(cliData)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "bed-remote")
+            : Path.GetFullPath(cliData);
         try { Directory.CreateDirectory(DataDir); } catch { }
+        Devs.Init(DataDir);             // 已配对的设备名单：界面一开就要看得见，所以在进界面之前读
 
         if (gui && Environment.UserInteractive) return Gui.Run();
         return Serve();
@@ -701,7 +710,9 @@ static class Program
             Log("  令牌 t=" + Token + "（地址里必须带上，否则控制指令会被拒绝）");
         else
             Log("  未设令牌：局域网里任何设备打开上面地址就能控制你的鼠标键盘。");
-        Log("  想加令牌： bedremote.exe --token=xxxx  或改 bedremote.json 里的 token");
+        Log("  想加令牌： 界面「门禁」那栏点「随机」再点「应用」，当场生效不用重启");
+        if (Devs.Count() > 0)
+            Log("  已配对设备 " + Devs.Count() + " 台（带过正确口令的就自动记下了，界面上能一台一台踢掉）");
         Log("  改按钮：  电脑浏览器打开 http://127.0.0.1:" + Port + "/edit");
         Log("  本机推送文字到手机:  curl \"http://127.0.0.1:" + Port + "/notify?text=任务跑完了\"");
         Log("  问一句并等手机回答:  curl \"http://127.0.0.1:" + Port + "/ask?text=要现在下载吗\"");
@@ -1107,9 +1118,12 @@ static class Program
     // 120ms 一次也够把"手机没了 → 键卡住"的窗口压在心跳窗口之内。
     static void HoldWatch()
     {
+        int tick = 0;
         while (true)
         {
             try { if (Held.HeldCount() > 0) Held.Sweep(); } catch { }
+            // 设备名单每来一条请求就更新"最近在线"，攒几秒再落一次盘（写文件不该跟着鼠标跑）
+            if (++tick >= 42) { tick = 0; try { Devs.Tick(); } catch { } }
             Thread.Sleep(120);
         }
     }
@@ -1429,6 +1443,14 @@ static class Program
 
             if (!Authed(r))
             {
+                // 人手动打开的那几个页面要给一句人话：光秃秃一个"403 bad token"，
+                // 人会以为程序坏了，其实只是口令改了/被踢了，要重新扫一次码。
+                // 只管页面：/panel、/gamepad 这些是 fetch 拿 JSON 的，塞 HTML 进去会把调用方噎住。
+                if (r.Path == "/" || r.Path == "/index.html" || r.Path == "/dj")
+                {
+                    Write(s, 403, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(ForbiddenHtml(r.Path)), r);
+                    c.Close(); return;
+                }
                 byte[] b = Encoding.UTF8.GetBytes("403 bad token\n");
                 Write(s, 403, "text/plain; charset=utf-8", b, r);
                 c.Close(); return;
@@ -1556,11 +1578,103 @@ static class Program
         catch { try { c.Close(); } catch { } }
     }
 
+    // 谁能进来。两条路，顺序不能反：
+    //   1) 设备凭据 d —— 这台手机哪次带正确口令进来过，我们就记下它自己那串随机 id；
+    //      以后它不用重输口令，而且能在电脑上一台一台踢掉（见 src\Devices.cs）。
+    //   2) 口令 t —— 第一次进来（或刚改过口令）走这条；带对了就顺手配对。
+    // 口令为空时第 2 条恒成立（家里局域网，少一次输入），这时配对没意义也就不配：
+    // 谁都能进的状态下，"名单"管不住任何人。
     static bool Authed(Req r)
     {
-        if (Token.Length == 0) return true;   // 默认不要求令牌：家里局域网，少一次输入
+        string d;
+        if (r.Form.TryGetValue("q_d", out d) && Devs.Shape(d) && Devs.Ok(d)) return true;
+        if (Token.Length == 0) return true;
         string t;
-        return r.Form.TryGetValue("q_t", out t) && t == Token;
+        if (!r.Form.TryGetValue("q_t", out t) || t != Token) return false;
+        if (r.Form.TryGetValue("q_d", out d) && Devs.Shape(d))
+        {
+            string dn; r.Form.TryGetValue("q_dn", out dn);
+            Devs.Pair(d, dn);
+        }
+        return true;
+    }
+
+    // 把某台设备现在挂着的长连接掐掉（踢人要用）。返回掐了几条。
+    // 先发一条 kick 再关：手机页收到就知道"我不是被网断了，是主人把我移出名单了"，
+    // 会停掉自动重连、把话讲明白 —— 不然 EventSource 每 0.8 秒重连一次，
+    // 一直 403，页面上只是"数字不跳"，人根本看不懂出了什么事。
+    static int CloseDevStreams(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return 0;
+        int n = 0;
+        byte[] b = Encoding.UTF8.GetBytes("data: {\"e\":\"kick\"}\n\n");
+        lock (ClientsLock)
+        {
+            for (int i = Clients.Count - 1; i >= 0; i--)
+            {
+                if (Clients[i].Dev != id) continue;
+                try { Clients[i].Stream.Write(b, 0, b.Length); Clients[i].Stream.Flush(); } catch { }
+                try { Clients[i].Stream.Close(); } catch { }
+                Clients[i].Dead = true;
+                Clients.RemoveAt(i);
+                n++;
+            }
+        }
+        return n;
+    }
+
+    // ---------- 口令 / 设备名单：界面和手机页都走这几个口子，别各自抄一份 ----------
+
+    // 给界面用的"随机口令"。8 位、只用不会看错的字（去掉 i o l 和 0 1），
+    // 因为人真的会把它念给别人听；局域网里没人爆破，这个长度足够。
+    internal static string NewToken()
+    {
+        const string abc = "abcdefghjkmnpqrstuvwxyz23456789";
+        var rnd = new Random(unchecked((int)DateTime.Now.Ticks));
+        var sb = new StringBuilder();
+        for (int i = 0; i < 8; i++) sb.Append(abc[rnd.Next(abc.Length)]);
+        return sb.ToString();
+    }
+
+    // 改口令：写进配置文件 + 当场生效，不用重启服务（重启会把他的手机页全断掉，太难看）。
+    // 返回 null = 成功，否则是给人看的那句失败原因。
+    internal static string ApplyToken(string want)
+    {
+        want = (want ?? "").Trim();
+        if (want.Length > 64) return "口令太长了（最多 64 个字符）";
+        string old = Token;
+        if (old == want) return null;
+        string err;
+        if (!Config.SetToken(want, out err)) return "写 bedremote.json 失败：" + err;
+        Token = want;
+        int cleared = 0;
+        if (want.Length > 0) cleared = Devs.Clear();
+        Log("[口令] 已" + (want.Length == 0 ? "清掉口令（局域网里任何设备打开地址就能控制）"
+                                            : "改成 " + want) +
+            "（已写进 bedremote.json，不用重启）" +
+            (cleared > 0 ? "；" + cleared + " 台已配对设备作废，要重新扫码" : ""));
+        // 还开着的页面：口令变了，它们下次发指令就会 403。先把地址推过去，
+        // 界面/手机页上的二维码立刻是新的，省得人还举着旧码扫。
+        Broadcast("{\"e\":\"tok\"}");
+        return null;
+    }
+
+    internal static string DevListJson() { return Devs.ListJson(); }
+
+    // 踢一台设备：先掐它的长连接，再从名单里删。删不掉也照样返回失败，别骗界面。
+    // by 是"谁干的"（界面里点的是 local，手机页点的是那台设备自己的 IP），日志要说得清。
+    internal static bool KickDev(string id, string by, out string msg)
+    {
+        msg = "";
+        if (!Devs.Shape(id)) { msg = "设备编号不对"; return false; }
+        string name = Devs.NameOf(id);
+        int closed = CloseDevStreams(id);
+        if (!Devs.Kick(id)) { msg = "名单里没有这台设备"; return false; }
+        msg = "已踢掉「" + (name.Length > 0 ? name : id) + "」" + (closed > 0 ? "（断开 " + closed + " 个连接）" : "");
+        // 尾巴上再带一句 ASCII 的：日志是可以贴到 issue 里的，英文那半句谁都读得懂（测试也靠它）。
+        Log("[设备] " + msg + "（由 " + (string.IsNullOrEmpty(by) ? "local" : by) + " 操作） [device kicked: " + id + "]");
+        Broadcast(PeersJson());
+        return true;
     }
 
     static void ParseForm(string body, Dictionary<string, string> into)
@@ -1632,6 +1746,7 @@ static class Program
         s.Write(op, 0, op.Length); s.Flush();
 
         var cli = new Sse(s);
+        string dv; if (r.Form.TryGetValue("q_d", out dv) && Devs.Shape(dv)) cli.Dev = dv;
         lock (ClientsLock) Clients.Add(cli);
         NoteSse(r.Remote, 1);
         try
@@ -1889,8 +2004,30 @@ static class Program
         return sb.ToString();
     }
 
-    static void Redirect(Stream s, string loc)
+    // 口令挡的是"没钥匙的人"，但被挡住的往往是自己人（口令刚改过，他手机里还留着旧地址）。
+    // 所以这一页必须说清楚"现在该干什么"，而不是只甩一个 403 让人以为程序坏了。
+    static string ForbiddenHtml(string path)
     {
+        var sb = new StringBuilder();
+        sb.Append("<!doctype html><meta charset=utf-8>");
+        sb.Append("<meta name=viewport content='width=device-width,initial-scale=1'>");
+        sb.Append("<title>进不去 · bedremote</title>");
+        sb.Append("<style>body{background:#14161a;color:#e8e8ee;font:16px/1.7 system-ui,'Microsoft YaHei UI',sans-serif;");
+        sb.Append("padding:26px 20px;max-width:620px;margin:0 auto}h1{font-size:20px;margin:0 0 12px}");
+        sb.Append("p{color:#b9bcc6;margin:0 0 14px}code{background:#23262c;padding:2px 7px;border-radius:5px;font-family:Consolas,monospace;font-size:14px}");
+        sb.Append("strong{color:#ffd9d0}.sm{color:#6b6f78;font-size:12px}</style>");
+        sb.Append("<h1>这台电脑加了口令，你手上的地址不带它</h1>");
+        sb.Append("<p>两种可能：要么这台电脑刚<strong>改过口令</strong>（改口令会把之前配过的设备全部作废，这是故意的 —— 换锁嘛）；");
+        sb.Append("要么它把你这台设备从名单里<strong>踢掉</strong>了。</p>");
+        sb.Append("<p>怎么办：在<strong>那台电脑</strong>上打开 <code>http://127.0.0.1:").Append(Port).Append("/pair</code>，");
+        sb.Append("屏幕上会出二维码，手机对着扫一次就进来了。以后换口令之前你都不用再扫。</p>");
+        sb.Append("<p>想手输地址：<code>").Append(HttpsOn ? "https" : "http").Append("://电脑IP:").Append(Port)
+          .Append("/?t=口令</code>（口令在主界面「门禁」那一栏里）。</p>");
+        sb.Append("<p class=sm>").Append(Json(Version)).Append("</p>");
+        return sb.ToString();
+    }
+
+    static void Redirect(Stream s, string loc)    {
         byte[] hb = Encoding.ASCII.GetBytes("HTTP/1.1 302 Found\r\nLocation: " + loc +
             "\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
         s.Write(hb, 0, hb.Length); s.Flush();
@@ -2204,9 +2341,22 @@ static class Program
                     ack = "ok";
                     break;
 
+                // ---- 门禁：已配对设备名单 / 踢掉一台 ----
+                // 能发这条指令 = 已经过了 Authed，所以"谁在名单里"这件事本身不算秘密。
+                // 注意这里**故意没有** c=token：改口令只在电脑界面上做。
+                // 一台已配对的手机当然也能动鼠标键盘，但"把别人锁在门外"这个决定该由主人坐在电脑前按下。
+                // 目标用 who，不能用 d —— d 是"我是谁"，一条请求里两个 d 会撞车
+                // （写错的那次实测：curl 拿 d 当目标，把自己的编号踢掉了，对面那台毫发无伤）。
+                case "devs": ack = Devs.ListJson(); break;
+                case "kick":
+                    {
+                        string m;
+                        ack = KickDev(G(r, "who", ""), r.Remote, out m) ? "ok:" + m : "err:" + m;
+                        break;
+                    }
+
                 // ---- 多机：名单 / 改名 / 扫一段 / 把面板推给同伴 ----
-                case "mates": ack = Mates.ListJson(); break;
-                case "scan": ack = MatesScan(); break;
+                case "mates": ack = Mates.ListJson(); break;                case "scan": ack = MatesScan(); break;
                 case "name":
                     {
                         string err;

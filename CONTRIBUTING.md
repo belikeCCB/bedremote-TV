@@ -16,6 +16,9 @@ allow-firewall.cmd   一条 UAC 把入站端口放行（自写程序不能靠代
 tools\monprobe.cs    只读侦察显示器与 DDC/CI 能力（开发用，不参与主构建）
 tools\shot.ps1       把界面窗口截成 PNG（PrintWindow，不抢前台）—— 改布局的验收手段
 tools\uiclick.ps1    在沙箱副本里真的点界面按钮、读日志框文本 —— 回归"按钮到底通没通"
+tools\secauth.ps1    门禁回归（服务端那半边）：起一个临时端口 + 临时数据目录的实例，验口令/配对/踢人/长连接/名单落盘
+tools\uiguard.ps1    门禁回归（界面那半边）：驱动真窗口的真按钮，顺便产出 docs 用的窗口截图
+tools\uigudump.ps1   把窗口里每个控件的类名/位置/文本按**码点**打出来 —— 界面按钮"找不到"时用它看真凶
 ```
 
 编译器是 `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`，即 .NET Framework 4.x。
@@ -26,7 +29,7 @@ tools\uiclick.ps1    在沙箱副本里真的点界面按钮、读日志框文�
 
 改 `.cs` 要重新编译；改 `www\*.html` 不用（页面是运行时从磁盘读的）。
 
-## 七个必须知道的坑
+## 这些坑必须知道
 
 1. **`*.cmd` / `*.vbs` 必须是 GBK + CRLF**，不要转成 UTF-8，也不要让编辑器改成 LF。
    中文批处理在 UTF-8 下，GBK 会把行尾的 `0x0A` 当成双字节汉字的尾字符**吃掉**，
@@ -75,6 +78,16 @@ tools\uiclick.ps1    在沙箱副本里真的点界面按钮、读日志框文�
 10. **改了默认值要管老存档**。布局存在手机 `localStorage` 和电脑 `bedremote.json` 两份里，
     只改代码，用户打开看到的还是坏样子。所以带版本号（`ver`）做一次性重排，
     而且只重排"出厂那几个 id"的位置尺寸，用户改过的名字/键位/透明度和自己加的控件一律不动。
+11. **跨进程 `SendMessage` 不许带指针。** 界面试验里想选中列表某一行，最顺手的是发
+    `LVM_SETITEMSTATE` 外加一个 `LVITEM` 指针 —— 但那个指针只在**你自己进程**里有效，
+    comctl32 会在**目标进程**里解引用它，结果对方当场崩（事件日志：`Application Error`、
+    故障模块 `comctl32.dll`、异常码 `0xc000041d`，写的是"某个窗口过程抛了异常"，跟真凶隔着一层）。
+    要么 `VirtualAllocEx` + `WriteProcessMemory` 把结构体搬过去（`tools\uiguard.ps1` 就是这么做的），
+    要么别跨进程。只有 `WM_SETTEXT` / `WM_GETTEXT` 这类系统特判过的消息能带字符串跨进程，别以为都行。
+12. **`.ps1` 里连中文注释都不许有**（CI 有一条专门查这个）。PowerShell 5.1 按 ANSI 代码页读脚本，
+    一个汉字被拆成两个字节，运气不好就把行尾的换行吃掉 —— 报出来的却是三百行之外一句
+    "Try 后面缺少 Catch 或 Finally 块"，看着完全不像编码问题。要匹配界面上的中文标题就用
+    `[char]0x8E22` 这种码点拼（见 `tools\uiclick.ps1` 里的 `U` 函数）。
 
 ## 改手机页 JS 怎么测（不用真手机）
 

@@ -29,6 +29,10 @@ static class Gui
     static CheckBox chkBoot, chkAwake, chkLock, chkHttps, chkCa;
     static ListView peers;
     static GroupBox gPeers;
+    static ListView devs;                 // 已配对的设备（能一台一台踢掉）
+    static GroupBox gSec;
+    static TextBox tokenBox;
+    static Label secInfo;
     static Panel screens;
     static ComboBox wake;
     static TextBox logBox;
@@ -37,6 +41,9 @@ static class Gui
     static TextBox nameBox;
     static Label matesInfo;
     static string shownName = "";
+    static string shownToken = "\u0000";        // 口令框上次显示的值（\u0000 = 还没显示过）
+    static string kickNote = "";               // 「已踢掉某某」那句话，显示在名单旁边
+    static long kickNoteAt = 0;
     static int passTick = 99;
     static System.Windows.Forms.Timer tm;
     static bool loading = true;           // 搭界面时的赋值不该触发"改配置"，见各 CheckedChanged
@@ -96,7 +103,9 @@ static class Gui
     {
         f = new Form();
         f.Text = "bedremote · 床上遥控";
-        f.ClientSize = new Size(800, 862);
+        // 800 宽放两列正好，但"门禁"（口令 + 已配对设备名单）再挤进任何一列都会把日志压没。
+        // 所以窗口拉宽一列、高度不动：躺着用电视看它的时候，高度才是稀缺的那一头。
+        f.ClientSize = new Size(1196, 862);
         f.MinimumSize = new Size(720, 640);
         f.StartPosition = FormStartPosition.CenterScreen;
         f.Font = new Font("Microsoft YaHei UI", 9f);
@@ -262,7 +271,7 @@ static class Gui
         hint.Size = new Size(366, 18);
         gOpt.Controls.Add(hint);
         var hint2 = new Label();
-        hint2.Text = "没设令牌 = 局域网里任何设备都能控制；加令牌改 bedremote.json";
+        hint2.Text = "要不要设口令、谁进得来 → 看右边那一栏「门禁」";
         hint2.ForeColor = Color.Gray;
         hint2.Font = new Font("Microsoft YaHei UI", 8f);
         hint2.Location = new Point(12, 116);
@@ -270,11 +279,84 @@ static class Gui
         gOpt.Controls.Add(hint2);
         f.Controls.Add(gOpt);
 
+        // ---- 门禁：口令 + 已配对设备（一台一台踢） ----
+        // 为什么值得单独一栏：口令是**一把共用钥匙**，给出去就收不回来，而且电脑上根本
+        // 分不清"现在这台是谁"。设备名单解决的就是"能不能只让某一台出去"。
+        gSec = new GroupBox();
+        gSec.Text = "门禁（谁能控制这台电脑）";
+        gSec.Location = new Point(796, 106);
+        gSec.Size = new Size(386, 336);
+        gSec.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        var lblToken = new Label();
+        lblToken.Text = "口令";
+        lblToken.Location = new Point(10, 27);
+        lblToken.Size = new Size(34, 18);
+        gSec.Controls.Add(lblToken);
+        tokenBox = new TextBox();
+        tokenBox.Location = new Point(46, 24);
+        tokenBox.Size = new Size(130, 23);
+        tokenBox.Font = new Font("Consolas", 10f);
+        gSec.Controls.Add(tokenBox);
+        var btnNewTok = new Button();
+        btnNewTok.Text = "一键设口令";
+        btnNewTok.Size = new Size(90, 26);
+        btnNewTok.Location = new Point(182, 22);
+        btnNewTok.Click += delegate { NewTokenAndPair(); };
+        gSec.Controls.Add(btnNewTok);
+        var btnApplyTok = new Button();
+        btnApplyTok.Text = "应用";
+        btnApplyTok.Size = new Size(52, 26);
+        btnApplyTok.Location = new Point(278, 22);
+        btnApplyTok.Click += delegate { ApplyTokenBox(); };
+        gSec.Controls.Add(btnApplyTok);
+        var hintTok = new Label();
+        hintTok.Text = "「一键设口令」= 随机生成 + 立刻生效 + 摊开二维码给手机扫。留空点「应用」= 不要口令。";
+        hintTok.ForeColor = Color.Gray;
+        hintTok.Font = new Font("Microsoft YaHei UI", 8f);
+        hintTok.Location = new Point(10, 52);
+        hintTok.Size = new Size(366, 16);
+        gSec.Controls.Add(hintTok);
+        var hintTok2 = new Label();
+        hintTok2.Text = "改口令会把下面名单里的人全部作废（都要重新扫码）—— 这正是「换锁」的意思。";
+        hintTok2.ForeColor = Color.Gray;
+        hintTok2.Font = new Font("Microsoft YaHei UI", 8f);
+        hintTok2.Location = new Point(10, 68);
+        hintTok2.Size = new Size(366, 16);
+        gSec.Controls.Add(hintTok2);
+        devs = new ListView();
+        devs.View = View.Details;
+        devs.FullRowSelect = true;
+        devs.GridLines = true;
+        devs.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+        devs.Location = new Point(10, 90);
+        devs.Size = new Size(366, 190);
+        devs.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        devs.Columns.Add("设备", 150);
+        devs.Columns.Add("最近", 78);
+        devs.Columns.Add("配对自", 118);
+        gSec.Controls.Add(devs);
+        var btnKick = new Button();
+        btnKick.Text = "踢掉这一台";
+        btnKick.Size = new Size(96, 26);
+        btnKick.Location = new Point(10, 288);
+        btnKick.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        btnKick.ForeColor = Color.Firebrick;
+        btnKick.Click += delegate { KickSelected(); };
+        gSec.Controls.Add(btnKick);
+        secInfo = new Label();
+        secInfo.Location = new Point(114, 292);
+        secInfo.Size = new Size(262, 18);
+        secInfo.ForeColor = Color.Gray;
+        secInfo.AutoEllipsis = true;
+        secInfo.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        gSec.Controls.Add(secInfo);
+        f.Controls.Add(gSec);
+
         // ---- 多台电脑：给这台起个名字 + 看看局域网里还有谁 ----
         var gNet = new GroupBox();
         gNet.Text = "多台电脑（同网段的 bedremote 会互相打招呼，手机上就能一键切过去）";
         gNet.Location = new Point(14, 450);
-        gNet.Size = new Size(772, 64);
+        gNet.Size = new Size(1168, 64);
         gNet.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         var lblName = new Label();
         lblName.Text = "这台电脑叫";
@@ -299,7 +381,7 @@ static class Gui
         gNet.Controls.Add(btnScan);
         matesInfo = new Label();
         matesInfo.Location = new Point(390, 27);
-        matesInfo.Size = new Size(374, 18);
+        matesInfo.Size = new Size(760, 18);
         matesInfo.ForeColor = Color.Gray;
         matesInfo.AutoEllipsis = true;
         gNet.Controls.Add(matesInfo);
@@ -308,11 +390,11 @@ static class Gui
         var gPass = new GroupBox();
         gPass.Text = "提权通行证（给「要管理员权限」的软件免掉那个确认框：授权一次，以后不弹）";
         gPass.Location = new Point(14, 520);
-        gPass.Size = new Size(772, 88);
+        gPass.Size = new Size(1168, 88);
         gPass.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         passInfo = new Label();
         passInfo.Location = new Point(10, 22);
-        passInfo.Size = new Size(750, 18);
+        passInfo.Size = new Size(1148, 18);
         passInfo.ForeColor = Color.Gray;
         gPass.Controls.Add(passInfo);
         elevCombo = new ComboBox();
@@ -330,7 +412,7 @@ static class Gui
         var gLog = new GroupBox();
         gLog.Text = "日志（谁在动你的鼠标键盘，这里看得见）";
         gLog.Location = new Point(14, 616);
-        gLog.Size = new Size(772, 234);
+        gLog.Size = new Size(1168, 234);
         gLog.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         logBox = new TextBox();
         logBox.Multiline = true;
@@ -340,7 +422,7 @@ static class Gui
         logBox.ForeColor = Color.Gainsboro;
         logBox.Font = new Font("Consolas", 9f);
         logBox.Location = new Point(10, 20);
-        logBox.Size = new Size(752, 204);
+        logBox.Size = new Size(1148, 204);
         logBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         gLog.Controls.Add(logBox);
         f.Controls.Add(gLog);
@@ -488,6 +570,11 @@ static class Gui
         gPeers.Text = ps.Count == 0 ? "正在控制这台电脑的设备（没有别人，只有你自己）"
                                     : "正在控制这台电脑的设备（" + ps.Count + " 台）";
 
+        // ---- 门禁：口令框回显 + 已配对设备名单 ----
+        string tk = Program.TokenNow;
+        if (tokenBox != null && !tokenBox.Focused && tk != shownToken) { shownToken = tk; tokenBox.Text = tk; }
+        RenderDevs();
+
         RenderScreens();
     }
 
@@ -567,6 +654,62 @@ static class Gui
         if (!Config.SetName(want, out err)) { Log2("[改名] 失败：" + err); return; }
         shownName = "";            // 让下一次 Refresh 把标题/输入框/广播都按新名字走
         Log2("[改名] 这台电脑现在叫「" + Config.NameOrMachine() + "」。同网段的 bedremote 最迟 5 秒后就知道，手机上重新打开名单会看到新名字。");
+        Refresh();
+    }
+
+    // ---------- 门禁：口令 + 已配对设备 ----------
+    // 口令这一档解决的是"别让整栋楼都能动我的鼠标"；设备名单解决的是"我给过码的那个人，
+    // 哪天不想让他进了"。两件事都在这一栏，因为它们是同一个决定的两面。
+
+    // 手打一个口令（或者把框删空 = 不要口令）→ 立刻生效。
+    static void ApplyTokenBox()
+    {
+        string want = tokenBox == null ? "" : tokenBox.Text.Trim();
+        string err = Program.ApplyToken(want);
+        if (err != null) { Log2("[口令] 失败：" + err); return; }
+        shownToken = want;         // 别让下一轮刷新把我刚打的字又按旧值刷回去
+        Log2(want.Length == 0
+            ? "[口令] 已清掉：局域网里任何设备打开地址就能控制这台电脑（地址不用再带 ?t=）。"
+            : "[口令] 已设为 " + want + " —— 不用重启就生效了。手机得用带 ?t= 的地址重新打开一次。");
+        Refresh();
+    }
+
+    // 一键：随机生成 → 当场生效 → 把配对二维码摊开。
+    // 名单里已经有人的时候先问一句：换口令等于把他们手里那把钥匙一起作废，
+    // 悄悄把家里人/队友的手机锁在门外是最难查的那种事故。
+    static void NewTokenAndPair()
+    {
+        string t = Program.NewToken();
+        tokenBox.Text = t;
+        int n = Devs.Count();
+        if (n > 0 && Program.TokenNow.Length > 0)
+        {
+            var ask = MessageBox.Show(f,
+                "换新口令会让名单里的 " + n + " 台设备全部作废：它们得重新扫一次码（或手输新口令）才能再进来。\n\n确定换吗？",
+                "换口令", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
+            if (ask != DialogResult.OK) { tokenBox.Text = Program.TokenNow; return; }
+        }
+        string err = Program.ApplyToken(t);
+        if (err != null) { Log2("[口令] 失败：" + err); tokenBox.Text = Program.TokenNow; return; }
+        shownToken = t;
+        Log2("[口令] 新口令是 " + t + "（已写进 bedremote.json，不用重启）。二维码已经摊开：手机上「扫一扫」对着这块屏就进来了。");
+        OpenUrl(LocalUrl("pair"));
+        Refresh();
+    }
+
+    static void KickSelected()
+    {
+        if (devs == null || devs.SelectedItems.Count == 0)
+        {
+            Log2("[设备] 先在名单里点一行，再按「踢掉这一台」。");
+            return;
+        }
+        string id = devs.SelectedItems[0].Tag as string;
+        string msg;
+        bool ok = Program.KickDev(id ?? "", "界面", out msg);
+        kickNote = msg;                 // 下一轮刷新时显示在名单旁边
+        kickNoteAt = DateTime.Now.Ticks;
+        Log2("[设备] " + msg);
         Refresh();
     }
 
@@ -976,6 +1119,57 @@ static class Gui
     {
         Program.Log(s);
         DrainLog();
+    }
+
+    // 名单每 1.2 秒重建一次，所以必须把"选中了哪台"记住再选回去 ——
+    // 否则他点一行、手指移向按钮的那一瞬间正好赶上刷新，选中被吞掉，按钮就成了摆设。
+    static void RenderDevs()
+    {
+        if (devs == null) return;
+        string keep = "";
+        if (devs.SelectedItems.Count > 0) { var k = devs.SelectedItems[0].Tag as string; if (k != null) keep = k; }
+        int n = 0;
+        devs.BeginUpdate();
+        devs.Items.Clear();
+        try
+        {
+            foreach (object o in Json.Arr(Json.Parse(Program.DevListJson())))
+            {
+                var d = Json.Obj(o);
+                string id = Json.Str(Json.Get(d, "id"), "");
+                if (id.Length == 0) continue;
+                string name = Json.Str(Json.Get(d, "name"), "");
+                long ago = (long)Json.Num(Json.Get(d, "ago"), 0);
+                if (ago < 0) ago = 0;
+                var it = new ListViewItem(name.Length > 0 ? name : "未命名设备");
+                it.SubItems.Add(Human(ago));
+                it.SubItems.Add(PairTime((long)Json.Num(Json.Get(d, "added"), 0)));
+                it.Tag = id;
+                devs.Items.Add(it);
+                n++;
+            }
+        }
+        catch { }
+        if (keep.Length > 0)
+            for (int i = 0; i < devs.Items.Count; i++)
+                if (keep == (devs.Items[i].Tag as string)) { devs.Items[i].Selected = true; break; }
+        devs.EndUpdate();
+
+        bool noTok = Program.TokenNow.Length == 0;
+        gSec.Text = noTok ? "门禁（没设口令：局域网里谁打开地址都能控制）"
+                          : "门禁（口令已设 · 已配对 " + n + " 台，可以一台一台踢掉）";
+        gSec.ForeColor = noTok ? Color.Firebrick : SystemColors.ControlText;
+        long since = (DateTime.Now.Ticks - kickNoteAt) / TimeSpan.TicksPerSecond;
+        secInfo.Text = since < 30 && kickNote.Length > 0 ? kickNote
+                     : (n == 0 ? "还没有设备配对过：手机带口令进来一次就会出现在这里" : "选中一台再按「踢掉这一台」");
+    }
+
+    // added 存的是"从 0001-01-01 起算的秒数"（DateTime.Now.Ticks / 1e7，跨重启稳定、也不用对时区；
+    // 现在这个量级是 6.4e10）。老数据/坏数据宁可显示"?"，也不要甩一个 0001-01-01 出来吓人。
+    static string PairTime(long secSinceEpoch)
+    {
+        if (secSinceEpoch < 63000000000L || secSinceEpoch > 250000000000L) return "?";
+        try { return new DateTime(secSinceEpoch * TimeSpan.TicksPerSecond).ToString("MM-dd HH:mm"); } catch { return "?"; }
     }
 
     static string Human(long sec)
