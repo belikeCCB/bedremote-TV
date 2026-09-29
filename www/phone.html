@@ -198,7 +198,7 @@ body.gpf #gp{height:100%;border:none;border-radius:0}
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 // 页面自己的版本号。服务端版本比它新就说明"你手里这个标签页是旧的"，自动刷一次。
 // 不加这个的话，我改了行为你却还在跑旧 JS，看起来就像"功能坏了/关不上"——今晚真的踩过。
-var BUILD="0.12.0";
+var BUILD="0.12.1";
 var $=function(s){return document.querySelector(s)};
 var main=$("#main"), nav=$("#nav");
 var buzz=function(m){try{navigator.vibrate&&navigator.vibrate(m||12)}catch(e){}};
@@ -724,7 +724,8 @@ function tiltPaint(){
   var m=$("#tiltMode"); if(m) m.innerHTML = TILT.hold
     ? '按住才动 ✓<span class="sub">点一下改成一直动</span>' : '一直动（不用按着）<span class="sub">点一下改回按住才动</span>';
   var h=$("#tiltHold"); if(h) h.classList.toggle("on",TILT.hold);
-  var w=$("#tiltWake"); if(w) w.textContent = (TILT.run&&TILT.wlOn)?"屏幕常亮 ✓":"屏幕常亮 —";
+  var w=$("#tiltWake"); if(w) w.textContent = (TILT.run&&TILT.wlOn)?"屏幕常亮 ✓":(TILT.wlErr?"常亮拿不到":"屏幕常亮 —");
+  if(TILT.wlErr){ var m2=$("#tiltHint"); if(m2&&TILT.run&&TILT.got) m2.innerHTML='<span style="color:#ffb64d">'+TILT.wlErr+'</span>' }
 }
 function tiltStart(){
   if(TILT.run) return;
@@ -748,19 +749,53 @@ function onOri(e){
   if(TILT.b0===null) tiltZero();
 }
 function tiltZero(){ TILT.b0=TILT.beta===null?0:TILT.beta; TILT.g0=TILT.gamma===null?0:TILT.gamma; TILT.ax=0; TILT.ay=0; tiltPaint() }
-function tiltHint(){
+function tiltHint(msg){
   var m=$("#tiltHint"); if(!m) return;
+  if(msg){ m.innerHTML=msg; return }
   m.innerHTML = location.protocol!=="https:"
     ? '<b style="color:#ffb4a0">这页不是 https:// 打开的（现在是 '+location.protocol+'//）—— 手机浏览器在非 HTTPS 下不给陀螺仪数据（事件根本不触发）。</b><br>电脑上那个界面里勾了「手机走 HTTPS」之后，扫配对页出的 https 二维码进来就有了。'
     : '没收到陀螺仪数据。这台设备可能没有陀螺仪（不少平板/低端机没有），或者浏览器把它关了。';
 }
+// iPhone（iOS 13+）的陀螺仪必须**在用户手势里**开口要，不开口就永远收不到事件 ——
+// 而且它不报错，只是安静地什么都不发，所以从安卓那边看代码是"正常"的。
+function isIOS(){ return /iP(hone|ad|od)/i.test(navigator.platform||"") || (navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1) }
+function tiltStart(){
+  if(TILT.run||TILT.asking) return;
+  var D=window.DeviceMotionEvent;
+  if(D&&typeof D.requestPermission==="function"){
+    TILT.asking=true;
+    D.requestPermission().then(function(st){
+      TILT.asking=false;
+      if(st==="granted") tiltGo();
+      else tiltHint('<b style="color:#ffb4a0">iPhone 要你点「允许」才给陀螺仪数据</b>（刚才的结果：'+st+'）。再点一次「开始动」，弹框里选允许。');
+    },function(e){
+      TILT.asking=false;
+      tiltHint('要陀螺仪权限时出错了：'+e.message+'。再点一次「开始动」试试。');
+    });
+    return;
+  }
+  tiltGo();
+}
+function tiltGo(){
+  TILT.run=true; TILT.last=Date.now(); TILT.ax=0; TILT.ay=0;
+  window.addEventListener("deviceorientation",onOri);
+  TILT.timer=setInterval(tiltStep,33);
+  tiltWake(true);
+  if(!TILT.got) setTimeout(function(){ if(TILT.run&&!TILT.got) tiltHint() },1500);
+  tiltPaint();
+}
 function tiltWake(on){
-  TILT.wlOn=false;
+  TILT.wlOn=false; TILT.wlErr="";
   if(!on){ if(TILT.wl){ try{TILT.wl.release()}catch(e){} TILT.wl=null } return }
-  if(!(navigator.wakeLock&&location.protocol==="https:")) return;
+  if(!navigator.wakeLock){ TILT.wlErr="这台浏览器的网页拿不到屏幕常亮"; return }
+  // 以前这里额外要求 https:// —— 那是照抄规范写的，实际 iPhone 的 Safari 在 http 的局域网页里也能拿到锁，
+  // 白放弃了一个功能。真拿不到时它自己会 reject，下面那句提示才是准的。
   navigator.wakeLock.request("screen").then(function(w){ TILT.wl=w; TILT.wlOn=true;
     w.addEventListener("release",function(){ TILT.wlOn=false })
-  },function(){});
+  },function(e){
+    TILT.wlErr="拿不到常亮锁（iPhone 上「添加到主屏幕」那种独立模式有个已知 bug 会这样；Safari 标签页里正常）";
+  });
+  tiltPaint();
 }
 function tiltSection(){
   TILT.sens=tiltPref("sens",130); TILT.dead=tiltPref("dead",1.5);
@@ -1735,8 +1770,14 @@ function djMsg(t){ var e=$("#djwhat"); if(e) e.textContent=t }
 /* ---------- 其它 ---------- */
 var awake=true;
 $("#fsb").onclick=function(){buzz();var d=document.documentElement;
-  if(document.fullscreenElement){try{document.exitFullscreen()}catch(e){}}
-  else{(d.requestFullscreen||d.webkitRequestFullscreen).call(d)}};
+  if(document.fullscreenElement){try{document.exitFullscreen()}catch(e){}return}
+  // iPhone 的 Safari 不给普通元素全屏（只有 <video> 可以），这里不能直接 .call() —— 会抛异常。
+  // 没有全屏也不该让人以为坏了：告诉他"加到主屏幕再从图标进来"就没有地址栏了。
+  var f=d.requestFullscreen||d.webkitRequestFullscreen;
+  if(!f){ alert(isIOS()
+      ? "iPhone 的 Safari 不允许网页全屏。\n\n想要没有地址栏的样子：分享 → 添加到主屏幕，然后从那个图标进来。\n（「手柄」那一页本来就自带沉浸模式，进去会把上下的东西都藏掉）"
+      : "这个浏览器不支持网页全屏。"); return }
+  try{ f.call(d) }catch(e){} };
 $("#editb").onclick=function(){buzz();window.open("/edit?t="+encodeURIComponent(T),"_blank")};
 
 /* ---------- 邀请别的设备（常态二维码）+ 几台在控制 ---------- */
@@ -1961,9 +2002,17 @@ loadPanel();sse();loadMates();
       var msg='跳到 https://'+location.host+'/health\n\n看到什么就说明什么：\n· 直接显示 ok、没有警告 → 证书已经被信任了，是我这条误报\n· 又弹「不受信任」→ 证书没真正装上，回去看「怎么装？」\n\n（按返回键就回到这一页）';
       if(confirm(msg)) location.href="/health"+(T?"?t="+encodeURIComponent(T):"") };
     var i=$("#tipIns"); if(i)i.onclick=function(){ buzz();
+      if(isIOS()){ alert("iPhone 的网页没有\"一键安装\"这个按钮。\n\n手动做： Safari 底部分享 → 添加到主屏幕。\n装完从桌面图标进来就没有地址栏，体验和 App 差不多。\n（前提还是证书要被信任，不然这页每次打开都要点一次\"继续访问\"）"); return }
       if(installEvt&&installEvt.prompt){ installEvt.prompt(); installEvt=null }
       else alert("Chrome 还没给出安装按钮。\n\n两种可能：\n一、证书还没被信任（先点「下载根证书」，装完刷新）；\n二、入口已经在菜单里了：右上角 ⋮ → 安装应用 / 添加到主屏幕。") };
     var w=$("#tipHow"); if(w)w.onclick=function(){ buzz();
+      if(isIOS()){ alert("iPhone 装自己生成的根证书要**两步**，第二步最容易被漏掉：\n\n"+
+        "1. 点「下载根证书」，Safari 会提示下载了一个描述文件\n"+
+        "2. 设置 → 通用 → VPN与设备管理 → 已下载描述文件 → 点 bedremote → 安装\n"+
+        "3. 回到 设置 → 通用 → 关于本机 → 拉到最底「证书信任设置」→ 把 bedremote 那个开关打开（完全信任）\n"+
+        "4. 刷新这一页；地址栏那个锁/不再弹警告就是成功了\n\n"+
+        "只做第 2 步不做第 3 步 = 系统里存了但**不信任**，表现就是「我明明装了还是不受信任」。\n"+
+        "说清楚：这张根证书是你这台电脑自己生成的，装进手机等于允许它冒充任何 https 网站，只在你自己的局域网里有意义，不用完可以删掉。"); return }
       alert("装根证书的步骤（各家安卓叫法略有不同）：\n\n"+
         "1. 点「下载根证书」，文件存到手机的下载目录\n"+
         "2. 设置 → 安全（或「密码与安全」）→ 加密与凭据 → 安装证书 → CA 证书\n"+
@@ -1971,7 +2020,8 @@ loadPanel();sse();loadMates();
         "3. 选刚下载的 bedremote-ca.crt，会弹一次风险提示，确认\n"+
         "4. 回浏览器刷新这一页，顶部会变成「已信任」并出现「装到桌面」\n\n"+
         "说清楚：这张根证书是你这台电脑自己生成的，装进手机等于允许它冒充任何 https 网站。"+
-        "它只在你自己的局域网里有意义。不想装也行 —— 陀螺仪不需要它，只有装成 App 才需要。") };
+        "它只在你自己的局域网里有意义。不想装也行 —— 安卓上陀螺仪不需要它（只有装成 App 才需要）；"+
+        "但 **iPhone 的陀螺仪只在 https 页面里才给数据**，所以 iPhone 想要倾斜控鼠标，这张证书基本躲不掉。") };
     var q=$("#tipQ"); if(q)q.onclick=function(){ buzz();
       if(location.protocol==="https:"&&navigator.serviceWorker&&SWOK!=="ok"){
         navigator.serviceWorker.register("/sw.js"+(T?"?t="+encodeURIComponent(T):"")).then(function(){SWOK="ok";paintTip()},function(){alert("还是不行：说明这张证书在系统里没被真正信任。重装一次，注意要按「CA 证书」装，别装成「VPN 和应用用户证书」。")});
