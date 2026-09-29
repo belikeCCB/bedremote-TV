@@ -62,9 +62,10 @@ function tick(){
     target=d.target; targetAt=performance.now(); playing=d.play; src=d.src||'';
     if(typeof d.vol==='number'&&!volSetByUser){ vol.value=d.vol; volv.textContent=Math.round(d.vol*100)+'%'; au.volume=d.vol }
     if(target<0){ st.textContent='手机没在播'; big.innerHTML='等手机 <small>开始播之后这里就有数</small>'; au.pause(); return }
-    // src 就是 /media?f=… 这个 URL —— 手机播的是同一个 URL，所以"同一份内容"不用靠运气
+    // src 可能是外部直链（电台、播客、平台的音频地址），也可能是本机 /media?f=… ——
+    // 只有后者要带令牌，往前者身上拼 ?t= 会把人家的地址弄坏
     if(cur!==d.src){ cur=d.src; what.textContent=d.title||d.src;
-      au.src=d.src+(d.src.indexOf('?')<0?'?':'&')+'t='+encodeURIComponent(T); au.load() }
+      au.src=/^https?:/i.test(d.src) ? d.src : d.src+(d.src.indexOf('?')<0?'?':'&')+'t='+encodeURIComponent(T); au.load() }
     if(!following){ st.textContent='已解耦'; return }
     if(playing){ au.play().catch(function(){}) } else { au.pause() }
     var now=target+(performance.now()-targetAt)/1000;

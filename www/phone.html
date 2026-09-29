@@ -1595,7 +1595,10 @@ function djSection(){
    '</div>'+
    '<div class="row"><span style="flex:1">电脑这份的音量</span><input type="range" id="djvol" min="0" max="1" step="0.02" value="1"><span id="djvolv">100%</span></div>'+
    '<div id="djgap" class="sect">差 — 毫秒</div>'+
-   '<div class="sect">歌单</div><div id="djlist" class="grid" style="grid-template-columns:1fr"></div>'+
+   '<div class="row"><input id="dju" class="in" type="url" inputmode="url" placeholder="粘一个音频链接（电台 / 播客 / 平台直链）" autocomplete="off" spellcheck="false">'+
+     '<button id="djpick" style="flex:0 0 auto;padding:0 14px;background:var(--acc);color:#00203d;border:none;font-weight:700">就播这个</button></div>'+
+   '<div class="sect">最近放过</div><div id="djrecent" class="grid" style="grid-template-columns:1fr"></div>'+
+   '<div id="djlocalsw"><div class="sect">电脑上的（来自 musicDirs）</div><div id="djlist" class="grid" style="grid-template-columns:1fr"></div></div>'+
    '<div class="note">那两颗 ±20 毫秒的按钮不是让你每次调 —— 它是<b>一次性标定</b>：'+
    '声音从电视喇叭真正响起来要经过 HDMI、电视自己的处理、几米空气，耳机那边也有它自己的延迟，'+
    '这一段<b>软件量不到</b>（耳机塞在耳朵里，麦克风听不见它），只能靠耳朵。'+
@@ -1606,12 +1609,33 @@ function djSection(){
 function wireDj(s){
   DJ.au=DJ.au||el("audio"); DJ.au.id="djau"; DJ.au.style.display="none"; document.body.appendChild(DJ.au);
   function j(p){ return fetch("/cmd?t="+encodeURIComponent(T)+"&c="+p,{cache:"no-store"}).then(function(r){return r.json()}) }
+  function djPick(u,n){
+    if(!u) return;
+    DJ.src=u; DJ.name=n||u.slice(0,40);
+    var w=$("#djwhat"); if(w) w.textContent="在放："+DJ.name;
+    // 记在手机上（不记电脑）：这是一台机器给一个人用的东西，别把别人的浏览历史写进配置文件
+    var rec=[]; try{ rec=JSON.parse(localStorage.getItem("br.dj")||"[]") }catch(e){}
+    rec=rec.filter(function(x){ return x.u!==u }); rec.unshift({u:u,n:DJ.name}); rec=rec.slice(0,12);
+    try{ localStorage.setItem("br.dj",JSON.stringify(rec)) }catch(e){}
+    djRecent();
+    djLoad();
+  }
+  function djRecent(){
+    var box=$("#djrecent"); if(!box) return; box.innerHTML="";
+    var rec=[]; try{ rec=JSON.parse(localStorage.getItem("br.dj")||"[]") }catch(e){}
+    if(!rec.length){ box.innerHTML='<div class="note">还没有 —— 粘一个链接试试，比如电台的 mp3/aac 直链、播客某一集的音频地址。</div>'; return }
+    rec.forEach(function(t){
+      var b=el("button",DJ.src===t.u?"on":"",t.n);
+      b.onclick=function(){ buzz(); djPick(t.u,t.n) };
+      box.appendChild(b);
+    });
+  }
   function djList(){
     j("tracks").then(function(a){
       var box=$("#djlist"); if(!box) return; box.innerHTML="";
       DJ.list=a||[];
-      if(!DJ.list.length){ box.innerHTML='<div class="note">电脑还没告诉我歌在哪 —— 在 bedremote.json 里加 '+
-        '<code>"musicDirs": ["D:\\\\音乐"]</code>，或用「改按钮」那页填。</div>'; return }
+      var sw=$("#djlocalsw"); if(sw) sw.style.display=DJ.list.length?"":"none";   // 没配 musicDirs 就别摆一节空列表
+      if(!DJ.list.length){ box.innerHTML=""; return }
       DJ.list.forEach(function(t){
         var b=el("button",DJ.src===t.u?"on":"",t.n);
         b.onclick=function(){ buzz(); DJ.src=t.u; DJ.name=t.n;
@@ -1621,7 +1645,8 @@ function wireDj(s){
       });
     },function(){ });
   }
-  function djLoad(){ if(!DJ.src||!DJ.au) return; if(DJ.au.getAttribute("data-u")!==DJ.src){ DJ.au.src=DJ.src+(DJ.src.indexOf("?")<0?"?":"&")+"t="+encodeURIComponent(T); DJ.au.setAttribute("data-u",DJ.src) }
+  function djUrl(u){ return /^https?:/i.test(u) ? u : u+(u.indexOf("?")<0?"?":"&")+"t="+encodeURIComponent(T) }
+  function djLoad(){ if(!DJ.src||!DJ.au) return; if(DJ.au.getAttribute("data-u")!==DJ.src){ DJ.au.src=djUrl(DJ.src); DJ.au.setAttribute("data-u",DJ.src) }
     var w=$("#djwhat"); if(w) w.textContent="在放："+DJ.name }
   function beat(){
     if(!DJ.au||!DJ.src) return;
@@ -1657,13 +1682,24 @@ function wireDj(s){
     fetch("/cmd?t="+encodeURIComponent(T)+"&c=open&u="+encodeURIComponent(u),{cache:"no-store"});
     djMsg("电脑浏览器应该已经打开那页了") };
   $("#djreload").onclick=function(){ buzz(); djList() };
+  var box=$("#dju");
+  function pickFromBox(){
+    var u=(box.value||"").trim();
+    if(!u){ djMsg("先粘一个链接"); return }
+    if(!/^https?:\/\//i.test(u)) u="http://"+u;
+    var nm=u.replace(/^https?:\/\//,"").split("/").filter(Boolean).pop()||u;
+    djPick(u,nm.length?nm.slice(0,44):u);
+    djMsg("手机点了「一起开始」就两边一起响");
+  }
+  $("#djpick").onclick=function(){ buzz(); pickFromBox() };
+  if(box) box.addEventListener("keydown",function(e){ if(e.key==="Enter"){ e.preventDefault(); pickFromBox() } });
   $("#djLate").onclick=function(){ nudge(-20) };
   $("#djEarly").onclick=function(){ nudge(20) };
   var vv=$("#djvol"), vl=$("#djvolv");
   if(vv) vv.oninput=function(){ if(vl) vl.textContent=Math.round(vv.value*100)+"%";
     fetch("/cmd?t="+encodeURIComponent(T)+"&c=djvol&v="+vv.value,{cache:"no-store"}) };
   j("djstate").then(function(d){ if(typeof d.off==="number") DJ.off=d.off });
-  djList();
+  djRecent(); djList();
 }
 function djMsg(t){ var e=$("#djwhat"); if(e) e.textContent=t }
 
