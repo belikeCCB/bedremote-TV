@@ -43,14 +43,14 @@ Set a `token` if that isn't what you want (see [SECURITY.md](SECURITY.md)).
 <td><img src="docs/screenshots/phone-pad.png" alt="触控板：上排三个键 + 板面" width="210"></td>
 <td><img src="docs/screenshots/phone-gamepad.png" alt="手柄：全屏布局，圆盘和按钮自己摆" width="210"></td>
 <td><img src="docs/screenshots/phone-monitors.png" alt="屏幕：每块屏一张卡，点名控制" width="210"></td>
+<td><img src="docs/screenshots/phone-type.png" alt="打字：修饰键 + 功能键 + 中文直投" width="210"></td>
 </tr><tr>
 <td align="center">遥控 —— 按钮、分组、页签都能改</td>
 <td align="center">触控板 —— 笔记本布局</td>
 <td align="center">手柄 —— 沉浸全屏，控件自己摆</td>
 <td align="center">屏幕 —— 谁当主屏 / 断信号 / 撤销</td>
+<td align="center">打字 —— 中文直接投进电脑焦点框</td>
 </tr></table>
-
-（还有一页《打字》：粘滞修饰键 + F1~F12 + 方向键 + 把中文直接投进电脑焦点框。）
 
 ## 它**不是**远程桌面
 
