@@ -41,6 +41,20 @@ jobs:
             Stop-Process -Name bedremote -Force -ErrorAction SilentlyContinue
           }
 
+      - name: 示例配置必须还能被真的 Config.Load 读懂（cfgprobe，带负对照见 CONTRIBUTING）
+        shell: pwsh
+        run: |
+          $csc = "${env:WINDIR}\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          $src = @('Apps','Config','Display','Gui','Mates','Passes','Tls','Wizard','BedRemote') | ForEach-Object { "src\$_.cs" }
+          & $csc -nologo -codepage:65001 -platform:x64 -main:CfgProbe -r:System.Windows.Forms.dll -r:System.Drawing.dll -out:cfgprobe.exe ($src + @('tools\cfgprobe.cs'))
+          if ($LASTEXITCODE -ne 0) { throw 'cfgprobe 编译失败' }
+          $d = Join-Path $env:TEMP 'cfgexample'
+          Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $d | Out-Null
+          Copy-Item bedremote.example.json (Join-Path $d 'bedremote.json')
+          & .\cfgprobe.exe $d
+          if ($LASTEXITCODE -ne 0) { throw 'bedremote.example.json 读不通 —— 示例配置和代码脱节了' }
+
       - name: 手柄布局检查（假 DOM 跑真 gpPlace，十种画布比例；不需要浏览器）
         shell: pwsh
         run: node tools/gpfitcheck.js
