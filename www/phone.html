@@ -198,7 +198,7 @@ body.gpf #gp{height:100%;border:none;border-radius:0}
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 // 页面自己的版本号。服务端版本比它新就说明"你手里这个标签页是旧的"，自动刷一次。
 // 不加这个的话，我改了行为你却还在跑旧 JS，看起来就像"功能坏了/关不上"——今晚真的踩过。
-var BUILD="0.11.2";
+var BUILD="0.11.3";
 var $=function(s){return document.querySelector(s)};
 var main=$("#main"), nav=$("#nav");
 var buzz=function(m){try{navigator.vibrate&&navigator.vibrate(m||12)}catch(e){}};
@@ -335,8 +335,23 @@ function render(){
   buildAgentRefs();
   buildScreenRefs();
   loadMons();
-  show(Math.min(curTab,n-1));
+  // 页签深链：地址后面带 #手柄 或 #gp 就直接开到那页。
+  // 用处：手机上把某一页单独放到桌面（App 快捷方式能带地址）、给别人看某一页、
+  // 脚本一步跳到触控板。内置页认英文 slug 而不是认序号，因为页签名字用户自己能改。
+  var ht=hashTab();
+  show(ht>=0?ht:Math.min(curTab,n-1));
 }
+var GP_SLUG=["pad","tilt","gp","cast","type","mons","agent"];   // 内置页签的固定顺序（从后往前数）
+function hashTab(){
+  var h=(location.hash||"").replace(/^#\/?/,""); if(!h) return -1;
+  try{ h=decodeURIComponent(h) }catch(e){}
+  var bs=nav.querySelectorAll("button"), m=bs.length;
+  for(var i=0;i<m;i++){ if((bs[i].textContent||"").trim()===h) return i }   // 先按当前页签名（改名后也能对上）
+  var k=GP_SLUG.indexOf(h);
+  if(k>=0 && m>=GP_SLUG.length) return m-GP_SLUG.length+k;
+  return -1;
+}
+addEventListener("hashchange",function(){ var i=hashTab(); if(i>=0) show(i) });
 function navBtn(i,label){
   var b=el("button",null,label);
   if(label==="Agent"){var g=el("span");g.id="badge";b.appendChild(g)}

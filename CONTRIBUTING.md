@@ -39,6 +39,8 @@ tools\uiclick.ps1    在沙箱副本里真的点界面按钮、读日志框文�
    要写中文按钮名就用码点拼：`[char][Convert]::ToInt32('65AD',16)`；
    实在要中文文本，就存成 UTF-8 with BOM（`printf '\xEF\xBB\xBF' | cat - x.ps1 > y.ps1 && mv y.ps1 x.ps1`）。
    `.cs` 不受这条约束，因为 build.ps1 显式指定了 `-codepage:65001`。
+   **这条现在由 CI 和 `package.ps1` 强制**（`.ps1` 里出现非 ASCII 就红）—— 因为作者本人在 0.11.3
+   又踩了一次：给 `tools/phoneshot.ps1` 加了两行中文注释，脚本当场解析失败。别指望"我记得"。
 2. **不要用 `HttpListener`**：非管理员时它要 URL ACL，绑不上。所以 HTTP 层是手写的 `TcpListener`。
    代价是没有现成的 multipart —— 表单/查询按 `application/x-www-form-urlencoded` 自己解析。
 3. **控制台不要设 UTF-8**。这台机（以及很多中文 Windows）代码页是 936，
@@ -71,7 +73,7 @@ tools\uiclick.ps1    在沙箱副本里真的点界面按钮、读日志框文�
    margin 写像素偏移，松手写回 `0px` → 居中跟着没了，旋钮赖在右下角。居中交给 `transform`，
    margin 只当偏移用。同理：任何"看起来是样式"的东西，只要脚本会写它，就不能再靠样式做默认值。
 10. **改了默认值要管老存档**。布局存在手机 `localStorage` 和电脑 `bedremote.json` 两份里，
-    只改代码，他打开看到的还是坏样子。所以带版本号（`ver`）做一次性重排，
+    只改代码，用户打开看到的还是坏样子。所以带版本号（`ver`）做一次性重排，
     而且只重排"出厂那几个 id"的位置尺寸，用户改过的名字/键位/透明度和自己加的控件一律不动。
 
 ## 改手机页 JS 怎么测（不用真手机）
@@ -96,6 +98,14 @@ SendInput 会更新它）并把 DOWN/UP 写进日志，不动任何窗口。
 **没有 node 也能跑**：`node-repl` 里 `createRequire` 一下，或用 ZCode 自带的无头 node。
 它的第一个参数可以是另一份 `phone.html` —— 拿 `git show HEAD~1:www/phone.html` 当**负对照**，
 看到它一片红，才知道这些检查真的会红（全绿的第一个测试基本都是假的）。
+
+**界面截图怎么来**（README 顶上那六张）：这台机的 Chrome/Edge **无头模式渲染直接崩**
+（`Abnormal renderer termination`，跟它坏掉的 PDH 计数器是同一类问题），内置浏览器面板没有可见表面时也截不了，
+所以 `tools/phoneshot.ps1` 走"真浏览器窗口 + PrintWindow"：`--app` 起一个 390x844 的窗口、
+`--user-data-dir` 用一次性目录、按"命令行里带这个目录"去找真正 owning 窗口的 PID（**你 Start-Process 的那个进程往往不是窗口的主人**）。
+截图前先想清楚里面有没有本机信息：地址、电脑名、前台窗口标题都会进图 ——
+所以截图是从**沙箱实例**（另目录、另端口、`bedremote.example.json` 改的演示名）上拍的，
+再用 `tools/redact.ps1` 把剩下的地址/机器名糊成实心块（故意不模糊：模糊是能被读回来的）。
 
 ## 加一个动作要动几个地方
 

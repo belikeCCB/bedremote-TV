@@ -4,6 +4,18 @@
 
 Lying in bed, watching the big screen in the room while the phone acts as mouse + keyboard.
 
+**English (TL;DR for people who don't read Chinese).** bedremote is a single-file Windows remote-control
+server for the "phone as input device" case: video and audio already go to your TV over HDMI, so this project
+deliberately has **no screen capture, no encoding, no WebRTC** — the phone only sends commands.
+Run `bedremote.exe` (built with the `csc.exe` that ships with Windows: no install, no admin, no NuGet, no runtime
+dependencies), open `http://<pc-ip>:8765/` on a phone on the same LAN, and you get a trackpad with dedicated
+click keys, a gamepad overlay you can lay out with your fingers, big editable buttons, per-monitor power/source
+control, clipboard-based typing of CJK text straight into the focused field, LAN discovery so one phone can hop
+between many PCs, and an HTTP endpoint for scripts to push messages to your phone and wait for a yes/no.
+It is **not** a remote desktop: if you want the picture on the phone, use Sunshine + Moonlight.
+Security warning, said plainly: by default anything on your LAN can control the machine, and there is no login.
+Set a `token` if that isn't what you want (see [SECURITY.md](SECURITY.md)).
+
 零安装（只要 Windows 自带的 `csc.exe`）、零管理员、单文件 exe、无任何运行时依赖。
 画面和声音走 HDMI，软件只管"手机 → 电脑"这一条指令通道。
 
@@ -17,6 +29,28 @@ Lying in bed, watching the big screen in the room while the phone acts as mouse 
 **能做的事**：触控板 + 独立点击键、中文直接投进电脑焦点框、大按钮面板（可视化编辑）、
 按屏点名控制（谁当主屏 / 让某块屏无信号 / 唤醒 / 救回）、防睡眠、把 Agent 的状态和问题推到手机上并等回答、
 常态配对二维码 + 手机自助出码邀人、电脑上看得见此刻有几台设备在控制它。
+
+## 长什么样
+
+电脑上一共就这一个窗口（地址、谁在控制、每块屏、选项、日志都在里面）：
+
+<img src="docs/screenshots/pc-gui.png" alt="bedremote 的电脑端窗口" width="520">
+
+手机上八个页签，这是最常用的四页（截图里"客厅那台"是演示机自己起的名字，地址和电脑名被遮掉了）：
+
+<table><tr>
+<td><img src="docs/screenshots/phone-remote.png" alt="遥控：可编辑的大按钮面板" width="210"></td>
+<td><img src="docs/screenshots/phone-pad.png" alt="触控板：上排三个键 + 板面" width="210"></td>
+<td><img src="docs/screenshots/phone-gamepad.png" alt="手柄：全屏布局，圆盘和按钮自己摆" width="210"></td>
+<td><img src="docs/screenshots/phone-monitors.png" alt="屏幕：每块屏一张卡，点名控制" width="210"></td>
+</tr><tr>
+<td align="center">遥控 —— 按钮、分组、页签都能改</td>
+<td align="center">触控板 —— 笔记本布局</td>
+<td align="center">手柄 —— 沉浸全屏，控件自己摆</td>
+<td align="center">屏幕 —— 谁当主屏 / 断信号 / 撤销</td>
+</tr></table>
+
+（还有一页《打字》：粘滞修饰键 + F1~F12 + 方向键 + 把中文直接投进电脑焦点框。）
 
 ## 它**不是**远程桌面
 
@@ -416,6 +450,9 @@ curl "http://127.0.0.1:8765/ask?text=要现在下载吗"
 
 ## 配置
 
+**想直接抄一份能跑的：仓库根目录的 [`bedremote.example.json`](bedremote.example.json)** ——
+里面每个键都是服务端真读的（包括界面和「提权通行证」那些），把它复制成 `bedremote.json` 就能起。
+
 `bedremote.json`（首次运行自动生成，删掉就回到内置默认）：
 
 ```json
@@ -445,9 +482,27 @@ curl "http://127.0.0.1:8765/ask?text=要现在下载吗"
 `allowOpen` 关掉就禁掉「丢过去」（电脑不再因为手机发来的链接开浏览器）。
 `gamepad` 是手机「手柄」页签的布局集，由手机自己写（「存到电脑」或者手机那份比电脑新时自动同步），
 电脑只负责存和发回来。`profiles` 是多套预设、`active` 是当前用的那套、`ts` 是"最后真改动"的时刻（谁新谁赢，
-所以布局跟着人走，不用每台机器重摆）。坐标全是 0..1 的比例，`x/y` 按画布宽/高算、`w/h` 按 min(宽,高) 算
+所以布局跟着人走，不用每台机器重摆）。`ver` 是布局的**几何版本号**：老存档（没这个字段）第一次读进来时
+会重排一次出厂控件的位置尺寸，只动几何，你改过的名字/键位/模式/透明度和自己加的控件都不动。
+坐标全是 0..1 的比例，`x/y` 按画布宽/高算、`w/h` 按 min(宽,高) 算
 （所以正方形在横竖屏下都还是正方形）。老形状（顶层 `widgets`，或更早的 `stick`/`look`/`buttons` 三段）
 手机读到时会自动迁成新格式。手动改也行，改完手机上点「读电脑」。
+
+**改完配置不知道程序认不认？** 配置读失败时服务端会**悄悄退回内置默认** —— 界面一切正常，只是你的改动没生效，
+从手机上看根本发现不了。所以有个专门的小工具验它：
+
+```
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe -nologo -codepage:65001 -platform:x64 ^
+  -r:System.Windows.Forms.dll -r:System.Drawing.dll -main:CfgProbe -out:cfgprobe.exe ^
+  src\Apps.cs src\Config.cs src\Display.cs src\Gui.cs src\Mates.cs src\Passes.cs src\Tls.cs ^
+  src\Wizard.cs src\BedRemote.cs tools\cfgprobe.cs
+
+cfgprobe.exe C:\路径\bedremote所在目录
+```
+
+它把那份 json 交给**真的 `Config.Load`** 读一遍，打印读到了什么（端口/页签数/按钮数/手柄几套预设），
+还会逐个检查按钮的 `act` 是不是服务端认识的动作 —— 写错一个字母就是"点了没反应"，这个能当场抓出来。
+退出码 0 = 读通了。
 
 ## 安全说明（认真看）
 
@@ -528,7 +583,16 @@ www\vendor\qrcode.js  二维码生成（第三方，见下）
 tools\monprobe.cs  只读侦察：显示器拓扑 + 每块屏的 DDC 能力（开发用）
 tools\mkicons.cs   重新生成 PWA 图标
 tools\shot.ps1     把界面窗口截成 PNG（PrintWindow，不抢前台）—— 改布局时靠它验收
+                   （`-OnlyPid` 只截某个进程自己的窗口，截浏览器时**必须**用它，否则会把别的窗口当"你的页面"截下来）
 tools\uiclick.ps1  在沙箱副本里真的点界面按钮、读日志框文本（回归用）
+tools\cfgprobe.cs  拿真的 Config.Load 读一份配置，看你改的有没有被悄悄退回默认（见《配置》）
+tools\gpharness.js 手柄那段 JS 的假 DOM（不弹浏览器、不注入任何东西地跑输入→发帧那条链）
+tools\gpfitcheck.js 跑上面的假 DOM，验十种画布比例下布局不撞不出界、拖过边能拖回来
+tools\keystateprobe.cs 轮询 GetAsyncKeyState，证明"注入真的落到系统键态里了"
+tools\certcheck.cs  自签证书自检（链上只剩 UntrustedRoot 才算对，SAN 有没有带当前 IP）
+package.ps1        打发布包：win.zip + source.zip（只从 git 里那份 tag 打，会验 exe/页面版本号一致、
+                   CRLF 没坏、不含别人的 bedremote.json；跑之前必须先提交并打 tag）
+bedremote.example.json  一份能直接抄的配置样例（每个键都是服务端真读的）
 ```
 
 只要 .NET Framework 4.x（Win10/11 自带），零 NuGet、零外部运行时、零 `.resx`/`.ico`。
@@ -559,6 +623,11 @@ Copyright (c) 2009 Kazuhiko Arase, MIT License（文件头部自带版权声明�
 
 ## 版本
 
-当前 **0.8.0**，改动记录在 [CHANGELOG.md](CHANGELOG.md)。
-贡献说明（编译方式、几个必须知道的坑）在 [CONTRIBUTING.md](CONTRIBUTING.md)，
+当前 **0.11.3**，改动记录在 [CHANGELOG.md](CHANGELOG.md)。
+贡献说明（编译方式、几个必须知道的坑、怎么在不碰你前台窗口的情况下测）在 [CONTRIBUTING.md](CONTRIBUTING.md)，
 安全模型（默认无令牌意味着什么、怎么收紧）在 [SECURITY.md](SECURITY.md)。
+
+**想要一个能直接下载的二进制**：仓库不带 exe（`.gitignore` 掉了，免得有人拿旧包当最新版），
+发布包在 GitHub Releases 上 —— 每个 tag 对应 `bedremote-<版本>-win.zip`（解压双击 `bedremote.exe` 就能跑）
+和 `bedremote-<版本>-source.zip`（只有源码）。自己打一份：先 `build.ps1` 再 `package.ps1`。
+仓库里没有 Releases 时，`build.cmd` 一下就是同一个东西。

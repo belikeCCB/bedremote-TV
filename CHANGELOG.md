@@ -3,6 +3,44 @@
 遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号按 SemVer。
 每个版本都是在同一台 Win10 机器上真实跑过之后才写的，"未验证"的东西一律写在条目里而不是悄悄漏掉。
 
+> **git 历史和这份清单对不上，是明说的，不是藏着的**：0.7.0 ~ 0.11.0 五个版本在同一个提交 `9a0a9d3` 里
+> （当时一次性补提交，已经拆不回来了），所以 `git log` 看不到逐版本的 diff，只能看这里。
+> 从 0.11.1 起是一个版本一个提交一个 tag。
+
+## [0.11.3] - 2026-09-29
+
+开源门面这一轮：仓库骨架没变，补的是"别人拿到仓库能不能用起来"的那几样。
+
+### Added
+- **`bedremote.example.json`**：一份能直接抄的配置，15 个键全是服务端真读的。
+- **`tools/cfgprobe.cs`**：拿**真的 `Config.Load`** 读一份配置并打印读到了什么，还会逐个核对按钮的 `act`
+  在不在服务端动作表里。存在的理由：配置读失败时程序**悄悄退回内置默认**，界面看着一切正常，
+  从手机上根本发现不了"我改的没生效"。
+- **`package.ps1`**：发布包从"我手工打的"变成一条命令 —— 只从 tag 打、要求工作区干净、
+  在暂存树里编译、验 exe 和页面的版本号一致、验 `.cmd` 的 CRLF、验包里不含别人的 `bedremote.json`，
+  最后把 zip 读回来数条目。
+- **页签深链**：`http://电脑:8765/#手柄`（或 `#gp`、`#pad`、`#type`、`#mons`…）直接开到那一页。
+  内置页认英文 slug 不认序号，因为页签名字用户能自己在软件里改。
+- **`tools/phoneshot.ps1` + `tools/redact.ps1`**：手机页在手机上截图的替代方案 ——
+  这台机的 Chrome/Edge 无头模式直接渲染崩掉（`Abnormal renderer termination`，PDH 计数器是坏的），
+  所以用真浏览器窗口 + `PrintWindow` 抓，再用 redact 把地址/电脑名糊掉。
+- **README 顶部一段英文摘要**（这项目对不读中文的人同样成立）+ 六张界面截图。
+
+### Fixed
+- `tools/shot.ps1` 加 `-OnlyPid`：按进程名截图对浏览器是**错的** —— 所有窗口都叫 chrome，
+  不锁 PID 就会把别的窗口当"我要的那一页"截下来（这次差点把不该进仓库的画面截进 README）。
+- 我自己又踩了一次写进 CONTRIBUTING 的坑：给 `.ps1` 写了中文注释 → PowerShell 5.1 按 GBK 读、
+  换行被吃 → `phoneshot.ps1` 直接解析失败。现在 CI 和 `package.ps1` 都会**拒绝含非 ASCII 的 `.ps1`**，
+  不再靠"我记得"。
+
+### Verified
+- CI 的每一步在本地单独跑过：`build.ps1`、起服务打 `/health` `/addr` `/pair` `/vendor/qrcode.js`、
+  CRLF 检查配了正/负对照（把 CR 字节删掉后必须报红，实测报红）。**Actions 那个环境本身仍然没跑过**，
+  workflow 顶部的说明改成了这个口径。
+- `bedremote.example.json` 不只是 JSON 合法：起了一个沙箱实例（另端口、另目录）真加载它，
+  `/status` 回 `cfg:true cfgErr:""`，README 那六张截图就是从这个演示实例上拍的（机器名"客厅那台"）。
+- `tools/cfgprobe.cs` 带负对照：把一个 `act` 改成不存在的动作，它报 5 条并退出码 1。
+
 ## [0.11.2] - 2026-09-29
 
 ### Fixed

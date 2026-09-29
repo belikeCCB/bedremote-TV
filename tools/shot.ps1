@@ -5,7 +5,9 @@ param(
   [string]$Name = 'bedremote-gui',
   [string]$Out  = 'shot.png',
   [string]$Pick = 'big',        # big = main window; small = the dialog on top of it; full = whole screen
-  [int]$Screen  = -1
+  [int]$Screen  = -1,
+  [int]$OnlyPid = 0             # only shoot this PID: browser processes share one image name, and without
+                                # a pin this would happily capture whatever else the browser has open
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -101,6 +103,7 @@ public static class Snap
 Add-Type -TypeDefinition $src -ReferencedAssemblies System.Drawing
 
 $pids = @(Get-Process -Name $Name -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.Id })
+if ($OnlyPid -gt 0) { $pids = @($OnlyPid) }     # an explicit PID beats the process-name filter
 if ($pids.Count -eq 0) { Write-Host ('NO PROCESS named ' + $Name); exit 2 }
 foreach ($id in $pids) { [Snap]::Pick = $Pick; Write-Host ('PID ' + $id + ' -> ' + [Snap]::Capture($id, $Out)) }
 if (Test-Path $Out) { Write-Host ('SAVED ' + ((Get-Item $Out).Length) + ' bytes -> ' + $Out) } else { Write-Host 'NOT SAVED' }

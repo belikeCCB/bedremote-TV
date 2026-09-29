@@ -520,7 +520,7 @@ static class Program
     static string DataDir = "";
     static long Started = 0;
     static volatile bool Awake = true;
-    internal const string Version = "bedremote 0.11.2";
+    internal const string Version = "bedremote 0.11.3";
 
     static void Help()
     {
@@ -1657,7 +1657,7 @@ static class Program
 
     // ---------- 指令 ----------
 
-    static bool IsInputCmd(string c)
+    internal static bool IsInputCmd(string c)
     {
         switch (c)
         {

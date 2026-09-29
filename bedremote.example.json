@@ -1,0 +1,93 @@
+{
+  "name": "客厅那台",
+  "port": 8765,
+  "token": "",
+
+  "https": true,
+  "ca": false,
+
+  "keepAwake": true,
+  "denyWhenLocked": true,
+  "allowOpen": true,
+  "ddcOff": false,
+  "autoWakeSec": 0,
+
+  "run": {
+    "声音设置": "start ms-settings:sound",
+    "显示设置": "start ms-settings:display",
+    "切屏面板": "start DisplaySwitch.exe"
+  },
+
+  "elevatedRun": [],
+
+  "screenNames": {},
+
+  "panels": {
+    "tabs": [
+      {
+        "name": "遥控",
+        "groups": [
+          {
+            "title": "播放",
+            "cols": 4,
+            "buttons": [
+              { "label": "⏯", "sub": "系统播放键", "act": "key", "key": "playpause" },
+              { "label": "空格", "sub": "网页播放/暂停", "act": "key", "key": "space" },
+              { "label": "⏮", "sub": "上一首", "act": "key", "key": "prevtrack" },
+              { "label": "⏭", "sub": "下一首", "act": "key", "key": "nexttrack" }
+            ]
+          },
+          {
+            "title": "音量",
+            "cols": 3,
+            "buttons": [
+              { "label": "－", "sub": "音量减", "act": "key", "key": "voldown" },
+              { "label": "🔇", "sub": "静音", "act": "key", "key": "mute" },
+              { "label": "＋", "sub": "音量加", "act": "key", "key": "volup" }
+            ]
+          },
+          {
+            "title": "窗口与切屏",
+            "cols": 4,
+            "buttons": [
+              { "label": "Alt+Tab", "sub": "切窗口", "act": "combo", "mods": "alt", "key": "tab" },
+              { "label": "Win+D", "sub": "显示桌面", "act": "combo", "mods": "win", "key": "d" },
+              { "label": "→ 电视屏", "act": "screen", "n": "tv" },
+              { "label": "→ 主屏", "act": "screen", "n": "0" }
+            ]
+          },
+          {
+            "title": "整机",
+            "cols": 3,
+            "buttons": [
+              { "label": "声音", "sub": "开 Windows 声音设置", "act": "run", "name": "声音设置" },
+              { "label": "防睡眠", "act": "awake" },
+              { "label": "关显示器", "sub": "动鼠标唤醒", "act": "power", "confirm": "关闭显示器？动一下鼠标就回来。" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+
+  "gamepad": {
+    "active": "默认",
+    "ts": 0,
+    "ver": 2,
+    "profiles": {
+      "默认": {
+        "opt": { "hz": 33 },
+        "widgets": [
+          { "id": "stick1", "kind": "stick", "x": 0.03, "y": 0.58, "w": 0.36, "h": 0.36,
+            "keys": ["w", "a", "s", "d"], "run": "shift", "runAt": 0.82, "dead": 0.16 },
+          { "id": "look1", "kind": "look", "x": 0.34, "y": 0.03, "w": 0.40, "h": 0.50,
+            "sens": 1.5, "invX": 1, "invY": 1 },
+          { "id": "b1", "kind": "btn", "x": 0.60, "y": 0.58, "w": 0.19, "h": 0.19, "round": 1,
+            "label": "攻击", "act": "mb", "k": "left", "mode": "hold" },
+          { "id": "b3", "kind": "btn", "x": 0.80, "y": 0.80, "w": 0.145, "h": 0.145, "round": 1,
+            "label": "跳跃", "act": "key", "k": "space", "mode": "tap" }
+        ]
+      }
+    }
+  }
+}

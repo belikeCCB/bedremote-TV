@@ -1,8 +1,9 @@
 name: build
 
-# 说明：这个 workflow 是在 Windows 机器上写完、**没有在 GitHub Actions 上实际跑过**的
-# （作者本地没有 gh / 也没有远端仓库）。它做的事和 build.ps1 完全一致，
-# 第一次推上去如果红了，改的应该是这里而不是构建脚本。
+# 说明：这个 workflow 的**每一步命令都在本地 Windows + PowerShell 5.1 上单独跑通过**
+# （编译、起服务打 /health /addr /pair /vendor、CRLF 检查还配了正/负对照），
+# 但**没有在 GitHub Actions 的运行环境里跑过** —— 作者本地没有远端仓库也没装 gh。
+# 它做的事和本地 build.ps1 一致；第一次真推上去如果红了，改的应该是这里。
 
 on:
   push:
@@ -39,6 +40,21 @@ jobs:
           } finally {
             Stop-Process -Name bedremote -Force -ErrorAction SilentlyContinue
           }
+
+      - name: 手柄布局检查（假 DOM 跑真 gpPlace，十种画布比例；不需要浏览器）
+        shell: pwsh
+        run: node tools/gpfitcheck.js
+
+      - name: 检查 .ps1 是纯 ASCII（PowerShell 5.1 按 GBK 读带中文的脚本会吃掉换行，见 CONTRIBUTING 第 2 条）
+        shell: pwsh
+        run: |
+          $bad = @()
+          Get-ChildItem -Recurse -File -Filter *.ps1 | ForEach-Object {
+            $t = [System.IO.File]::ReadAllText($_.FullName)
+            if ($t -match '[^\x00-\x7F]') { $bad += $_.FullName }
+          }
+          if ($bad.Count) { $bad | ForEach-Object { Write-Host "含非 ASCII: $_" }; exit 1 }
+          Write-Host '所有 .ps1 都是纯 ASCII'
 
       - name: 检查批处理文件仍然是 CRLF（被转成 LF 会静默咬人，见 CONTRIBUTING 第 1 条）
         shell: pwsh
