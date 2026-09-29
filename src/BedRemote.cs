@@ -520,7 +520,7 @@ static class Program
     static string DataDir = "";
     static long Started = 0;
     static volatile bool Awake = true;
-    internal const string Version = "bedremote 0.11.1";
+    internal const string Version = "bedremote 0.11.2";
 
     static void Help()
     {

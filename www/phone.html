@@ -119,7 +119,10 @@ nav button.sel{background:#17171d;color:#fff;box-shadow:inset 0 2px 0 var(--acc)
 .gpbtn.round{border-radius:50%}
 .gpbtn.on{background:#20304a;border-color:var(--acc);color:#fff}
 .gpstick{border:1px dashed #33333c;border-radius:50%;background:rgba(255,255,255,.02)}
-.gpstick .knob{position:absolute;left:50%;top:50%;width:46%;height:46%;margin:-23% 0 0 -23%;
+/* 归中用 transform，不用负 margin：margin 一旦被脚本写成像素值（推摇杆时就是这个写法），
+   负 margin 那套"自己减自己一半"的居中就没了，松手后旋钮会永远歪在右下 —— 手机上看到的就是这个。 */
+.gpstick .knob{position:absolute;left:50%;top:50%;width:46%;height:46%;
+ transform:translate(-50%,-50%);
  border-radius:50%;background:rgba(77,163,255,.20);border:1px solid #35597d}
 .gplook{border:1px dashed #2b2b33;border-radius:14px;background:rgba(255,255,255,.015);color:#3a3a44;font-size:11px}
 .gpdpad{border:1px dashed #33333c;border-radius:14px;background:rgba(255,255,255,.02)}
@@ -195,7 +198,7 @@ body.gpf #gp{height:100%;border:none;border-radius:0}
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 // 页面自己的版本号。服务端版本比它新就说明"你手里这个标签页是旧的"，自动刷一次。
 // 不加这个的话，我改了行为你却还在跑旧 JS，看起来就像"功能坏了/关不上"——今晚真的踩过。
-var BUILD="0.11.1";
+var BUILD="0.11.2";
 var $=function(s){return document.querySelector(s)};
 var main=$("#main"), nav=$("#nav");
 var buzz=function(m){try{navigator.vibrate&&navigator.vibrate(m||12)}catch(e){}};
@@ -805,15 +808,20 @@ function wireTilt(s){
 // 坐标约定：x/y = 控件左上角占画布宽/高的比例；w/h 按 min(宽,高) 算，所以正方形在横竖屏下还是正方形。
 // 所有控件（按钮 / 摇杆 / 视角区 / 十字键）挤在同一个 widgets 数组里 —— 这样"再加一个摇杆"、
 // "两块视角区"这类需求不用改任何代码，也不用给每种控件单独存一份。
+// 默认布局是按"什么形状都能摆开"挑的：位置按 x·W / y·H 走，大小按 min(W,H) 走，
+// 两个尺度一不同比例就不同步 —— 老规矩那套数值只在竖屏手机上不撞，
+// 一到横屏/大屏（1280x720 起）跳跃键就压进攻击键、还被夹出画布。
+// 下面这组数值在 10 种画布比例（竖屏 / 横屏 / 平板 / 电视 / 超宽 / 方屏 / 小窗）下都互不重叠、不出界，
+// 用 tools/gpfitcheck.js 算出来的，别顺手调好看又把它弄歪。
 var GP_DEF={
   widgets:[
-    {id:"stick1",kind:"stick",x:0.035,y:0.545,w:0.39,h:0.39,keys:["w","a","s","d"],run:"shift",runAt:0.82,dead:0.16},
-    {id:"look1",kind:"look",x:0.44,y:0.03,w:0.54,h:0.58,sens:1.5,invX:1,invY:1},
-    {id:"b1",x:0.615,y:0.700,w:0.235,h:0.235,round:1,label:"攻击",act:"mb",k:"left",mode:"hold"},
-    {id:"b2",x:0.505,y:0.885,w:0.165,h:0.165,round:1,label:"交互",act:"key",k:"e",mode:"tap"},
-    {id:"b3",x:0.700,y:0.885,w:0.165,h:0.165,round:1,label:"跳跃",act:"key",k:"space",mode:"tap"},
-    {id:"b4",x:0.865,y:0.760,w:0.125,h:0.125,round:1,label:"1",act:"key",k:"1",mode:"tap"},
-    {id:"b5",x:0.865,y:0.615,w:0.125,h:0.125,round:1,label:"2",act:"key",k:"2",mode:"tap"}
+    {id:"stick1",kind:"stick",x:0.03,y:0.58,w:0.36,h:0.36,keys:["w","a","s","d"],run:"shift",runAt:0.82,dead:0.16},
+    {id:"look1",kind:"look",x:0.34,y:0.03,w:0.40,h:0.50,sens:1.5,invX:1,invY:1},
+    {id:"b1",x:0.60,y:0.58,w:0.19,h:0.19,round:1,label:"攻击",act:"mb",k:"left",mode:"hold"},
+    {id:"b2",x:0.46,y:0.82,w:0.145,h:0.145,round:1,label:"交互",act:"key",k:"e",mode:"tap"},
+    {id:"b3",x:0.80,y:0.80,w:0.145,h:0.145,round:1,label:"跳跃",act:"key",k:"space",mode:"tap"},
+    {id:"b4",x:0.84,y:0.52,w:0.115,h:0.115,round:1,label:"1",act:"key",k:"1",mode:"tap"},
+    {id:"b5",x:0.87,y:0.665,w:0.115,h:0.115,round:1,label:"2",act:"key",k:"2",mode:"tap"}
   ],
   opt:{hz:33}
 };
@@ -863,8 +871,9 @@ function gpSaveLayout(toPc,silent){
 }
 function gpMsg(t){ var e=$("#gpst"); if(e) e.textContent=t }
 // 老布局（stick/look/buttons 三段）迁成统一的 widgets；顺便补齐缺字段，以后加类型也不会崩
+var GP_LAY_VER=2;   // 2 = 位置按"十种画布比例都不重叠"重排过
 function gpFix(l){
-  var d=GP_DEF, out={opt:l.opt||gpClone(d.opt), widgets:[]};
+  var d=GP_DEF, out={opt:l.opt||gpClone(d.opt), widgets:[], ver:l.ver||0};
   var old=[];
   if(l.widgets&&l.widgets.length) old=l.widgets;
   else {
@@ -905,6 +914,17 @@ function gpFix(l){
     }
     out.widgets.push(w);
   });
+  // 0.11.2 之前存下来的布局是照竖屏摆的：横屏/大屏上会互相压着、还被夹出画布。
+  // 这里只换"出厂那几个 id"的几何（键位、名字、模式、透明度一律留着），
+  // 用户自己加的控件不动 —— 它们的位置是用户自己拖出来的。
+  if(l.ver!==GP_LAY_VER){
+    out.widgets.forEach(function(w){
+      var f=null;
+      GP_DEF.widgets.forEach(function(z){ if(z.id===w.id&&(z.kind||"btn")===(w.kind||"btn")) f=z });
+      if(f){ w.x=f.x; w.y=f.y; w.w=f.w; w.h=f.h }
+    });
+  }
+  out.ver=GP_LAY_VER;
   if(!out.widgets.length) out.widgets=gpClone(d.widgets);
   return out;
 }
@@ -1089,25 +1109,42 @@ function gpBuild(){
   });
   gpPlace(); gpBind(); gpPaintSel(); gpPaintProf(); gpPaintLag();
 }
+// 一个控件在画布上占多大 —— 只有这一处算法，gpRects 和夹边界都用它，
+// 免得两边各写一份、写歪了就成了"画的和存的对不上"。
+function gpBox(w,W,H){
+  var S=Math.min(W,H);
+  return {pw:w.w*S, ph:(w.kind==="stick"||w.kind==="dpad")?w.w*S:w.h*S};
+}
 function gpRects(){
-  var root=GP.root, W=root.clientWidth, H=root.clientHeight, S=Math.min(W,H), out={};
+  var root=GP.root, W=root.clientWidth, H=root.clientHeight, out={};
   GP.lay.widgets.forEach(function(w){
-    var pw=w.w*S, ph=(w.kind==="stick"||w.kind==="dpad")?w.w*S:w.h*S;
-    var x=w.x*W, y=w.y*H;
-    out[w.id]={x:x,y:y,w:pw,h:ph,cx:x+pw/2,cy:y+ph/2,r:pw/2};
-    if(w.kind==="dpad") out[w.id].r=ph/2;
+    var b=gpBox(w,W,H), x=w.x*W, y=w.y*H;
+    out[w.id]={x:x,y:y,w:b.pw,h:b.ph,cx:x+b.pw/2,cy:y+b.ph/2,r:b.pw/2};
+    if(w.kind==="dpad") out[w.id].r=b.ph/2;
   });
   return out;
 }
+// 把模型坐标夹进画布：控件右下角不许出界。
+// 关键是"只夹模型"，gpPlace 画的时候就不再另外夹一次 ——
+// 以前两边各夹一份（模型夹到 0.98、画的时候夹到"装得下"），拖过边之后模型还在偷偷涨，
+// 画的却被钉在角落，往回拖得先把那段看不见的账还清才动，手感就是"粘在右下角拉不动"。
+function gpFit(){
+  if(!GP.root||!GP.lay) return;
+  var W=GP.root.clientWidth, H=GP.root.clientHeight; if(!W||!H) return;
+  GP.lay.widgets.forEach(function(w){
+    var b=gpBox(w,W,H);
+    var mx=Math.max(0,(W-b.pw)/W), my=Math.max(0,(H-b.ph)/H);   // 控件比画布还大时退化成贴左上
+    w.x=Math.max(0,Math.min(mx,w.x)); w.y=Math.max(0,Math.min(my,w.y));
+  });
+}
 function gpPlace(){
   if(!GP.root||!GP.lay) return;
-  var R=gpRects(), root=GP.root, W=root.clientWidth, H=root.clientHeight;
-  if(!W||!H) return;
+  gpFit();
+  var R=gpRects(), root=GP.root;
+  if(!root.clientWidth||!root.clientHeight) return;
   Array.prototype.forEach.call(root.querySelectorAll(".gpw"),function(e){
-    var k=e.dataset.w, r=R[k]; if(!r) return;
-    // 夹在画布内：不同手机尺寸/横竖屏都不指望布局碰巧对得上
-    var x=Math.max(0,Math.min(W-r.w,r.x)), y=Math.max(0,Math.min(H-r.h,r.y));
-    e.style.left=Math.round(x)+"px"; e.style.top=Math.round(y)+"px";
+    var r=R[e.dataset.w]; if(!r) return;
+    e.style.left=Math.round(r.x)+"px"; e.style.top=Math.round(r.y)+"px";
     e.style.width=Math.round(r.w)+"px"; e.style.height=Math.round(r.h)+"px";
   });
 }
@@ -1294,9 +1331,9 @@ function gpPaintOn(){
 }
 function gpMove(id,dxpx,dypx){
   var root=GP.root, W=root.clientWidth, H=root.clientHeight;
-  var w=gpById(id); if(!w) return;
-  w.x=Math.max(0,Math.min(0.98,w.x+dxpx/W)); w.y=Math.max(0,Math.min(0.98,w.y+dypx/H));
-  gpPlace();
+  var w=gpById(id); if(!w||!W||!H) return;
+  w.x+=dxpx/W; w.y+=dypx/H;
+  gpPlace();                      // 夹边界只在 gpPlace→gpFit 这一处做，拖到边上就正好贴边
 }
 /* ---- 属性面板：编辑时选中控件，从底部滑出来，一次改完所有字段 ---- */
 function gpPanel(){
