@@ -38,16 +38,17 @@ if ($LASTEXITCODE -ne 0) { throw ('no tag ' + $ref + ' - tag it first (git tag -
 $headSha = (& git -C $root rev-parse HEAD)
 if ($tagSha.Trim() -ne $headSha.Trim()) { Write-Host ('NOTE: ' + $ref + ' points at ' + $tagSha.Trim() + ' (not HEAD); packaging the tag.') }
 
-# 2) stage exactly the tracked files of that tag
+# stage exactly the tracked files of that tag.
+# zip + Expand-Archive on purpose: `git archive --format=tar | tar -x` breaks when this script is
+# started from a shell whose PATH has GNU tar first (Git Bash) - it reads "C:\..." as a remote host.
 $work = Join-Path $env:TEMP ('brpack-' + $Version + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
 $stage = Join-Path $work $ref
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
-$tar = Join-Path $work 't.tar'
-& git -C $root archive --format=tar -o $tar $ref
+$zip = Join-Path $work 'tree.zip'
+& git -C $root archive --format=zip -o $zip $ref
 if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
-& tar -xf $tar -C $stage
-if ($LASTEXITCODE -ne 0) { throw 'tar extract failed' }
-Remove-Item $tar -Force
+Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
+Remove-Item $zip -Force
 $listed = @(& git -C $root ls-tree -r --name-only $ref)
 Write-Host ('staged   : ' + $listed.Count + ' tracked files')
 
