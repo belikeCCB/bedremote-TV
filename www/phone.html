@@ -127,9 +127,13 @@ nav button.sel{background:#17171d;color:#fff;box-shadow:inset 0 2px 0 var(--acc)
 .gpedit .gpw{outline:1px dashed var(--warn);outline-offset:-1px}
 .gpedit .gpw.sel{outline:2px solid var(--acc);outline-offset:-2px}
 /* 右上角那个半透明把手：平时淡到几乎看不见，点它才出菜单 */
-#gphud{position:fixed;right:10px;top:calc(env(safe-area-inset-top) + 8px);z-index:45;width:40px;height:40px;
- min-height:40px;padding:0;border-radius:20px;background:rgba(24,24,29,.42);border:1px solid #2c2c33;
- color:#7f7f8a;font-size:17px;opacity:.5}
+/* 退出全屏的出口：页签栏在全屏时是藏起来的，所以这个把手必须"看得见、认得出是按钮"。
+   写成"菜单"两个字比 ⋯ 好认 —— 找不到出口就会卡在这一页。 */
+#gphud{position:fixed;right:10px;top:calc(env(safe-area-inset-top) + 10px);z-index:45;
+ min-width:60px;height:44px;padding:0 14px;border-radius:22px;background:rgba(20,23,30,.92);
+ border:1px solid #46536a;color:#dbe6f5;font-size:14px;font-weight:700;opacity:1;
+ box-shadow:0 2px 10px rgba(0,0,0,.5);align-items:center;justify-content:center}
+#gphud.on{background:#20304a;border-color:var(--acc)}
 #gptb{display:none;position:fixed;left:0;right:0;bottom:0;z-index:46;background:rgba(14,14,17,.97);
  border-top:1px solid var(--line);padding:10px 10px calc(env(safe-area-inset-bottom) + 10px);
  gap:6px;align-items:center;font-size:12px;color:var(--dim);flex-wrap:wrap}
@@ -191,7 +195,7 @@ body.gpf #gp{height:100%;border:none;border-radius:0}
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 // 页面自己的版本号。服务端版本比它新就说明"你手里这个标签页是旧的"，自动刷一次。
 // 不加这个的话，我改了行为你却还在跑旧 JS，看起来就像"功能坏了/关不上"——今晚真的踩过。
-var BUILD="0.11.0";
+var BUILD="0.11.1";
 var $=function(s){return document.querySelector(s)};
 var main=$("#main"), nav=$("#nav");
 var buzz=function(m){try{navigator.vibrate&&navigator.vibrate(m||12)}catch(e){}};
@@ -954,7 +958,7 @@ function gpStart(){
   $("#gprm").onclick=function(){ buzz(); gpDelProfile() };
   $("#gplagb").onclick=function(){ buzz(); gpLagProbe(true) };
   $("#gphud").onclick=function(){ buzz(); var t=$("#gptb"); var on=t.classList.toggle("on"); $("#gpp").classList.remove("on");
-    this.textContent=on?"✕":"" };
+    this.textContent=on?"✕ 收起":"菜单"; this.classList.toggle("on",on) };
   addEventListener("resize",gpPlace);
   addEventListener("orientationchange",function(){ setTimeout(gpPlace,220) });
   GP.on=true;
@@ -1400,7 +1404,7 @@ function gpImm(on){
   GP.imm=on;
   document.body.classList.toggle("gpf",GP.imm);
   var t=$("#gptb"); if(t) t.classList.remove("on");
-  var hud=$("#gphud"); if(hud) hud.textContent="⋯";
+  var hud=$("#gphud"); if(hud){ hud.textContent="菜单"; hud.classList.remove("on") }
   var d=document.documentElement;
   try{
     if(GP.imm&&!document.fullscreenElement&&(d.requestFullscreen||d.webkitRequestFullscreen))
@@ -1420,6 +1424,11 @@ function gpStop(){
 // 切后台/关页面：立刻叫电脑松手，别等那 900ms 看门狗
 document.addEventListener("visibilitychange",function(){ if(document.hidden&&GP.timer) gpStop() });
 addEventListener("pagehide",function(){ if(GP.timer) gpStop() });
+// 用系统返回手势（或电脑上按 ESC）退出全屏时，浏览器只退全屏、不会顺手把页签栏放回来 ——
+// 不管它的话人就卡在"上面空、下面空、找不到切页的地方"。
+document.addEventListener("fullscreenchange",function(){
+  if(GP.imm&&!document.fullscreenElement&&!document.webkitFullscreenElement) gpImm(false) });
+addEventListener("keydown",function(e){ if(e.key==="Escape"&&GP.imm) gpImm(false) });
 
 /* ---------- 打字 ---------- */
 var mods=[];
