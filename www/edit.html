@@ -54,6 +54,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   <button id="addGrp">＋ 分组</button>
   <button id="save" class="pri">保存并生效</button>
   <button id="jsonBtn">JSON 模式</button>
+  <button id="macroBtn">组合动作</button>
   <button id="refBtn">按键对照表</button>
   <span id="msg"></span>
   <span class="hint" style="margin-left:auto">保存后，手机上已打开的页面会自动刷新</span>
@@ -76,7 +77,9 @@ var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 var P={tabs:[]}, cur=0;
 var ACTS=[["key","按键"],["combo","组合键"],["text","输入文字"],["paste","粘贴(走剪贴板)"],
  ["screen","跳到某块屏"],["power","关显示器"],["awake","防睡眠开关"],["run","白名单命令"],
- ["reload","重载手机页"],["tab","切到某页签"],["clearmods","清除修饰键"]];
+ ["macro","组合动作"],["reload","重载手机页"],["tab","切到某页签"],["clearmods","清除修饰键"]];
+// 组合动作的名单（从电脑上读的），按钮那一行要拿它做下拉
+var MACROS=[];
 var KEYS=("enter esc tab space backspace del ins up down left right home end pgup pgdn caps "+
  "win menu printscreen pause playpause nexttrack prevtrack stoptrack mute volup voldown "+
  "f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 "+
@@ -89,6 +92,9 @@ function say(t,ok){var m=q("#msg");m.textContent=t;m.className=ok?"ok":"bad";cle
 
 /* ---------- 读写 ---------- */
 function load(){
+  fetch("/macros?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){return r.json()}).then(function(m){
+    MACROS=m||[];
+  },function(){MACROS=[]});
   fetch("/panel?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){return r.json()}).then(function(p){
     P=p&&p.tabs?p:{tabs:[]}; cur=0; render();
   },function(){P={tabs:[]};render();say("读不到面板，从空开始",false)});
@@ -162,7 +168,7 @@ function btnRow(g,btn,bi){
     btn.act=v;
     if(v==="key"||v==="combo"){btn.key=btn.key||"a"}
     if(v==="text"||v==="paste"){btn.text=btn.text||""}
-    if(v==="run"){btn.name=btn.name||""}
+    if(v==="run"||v==="macro"){btn.name=btn.name||""}
   })));
 
   var needKey=["key","combo"].indexOf(btn.act)>=0;
@@ -180,6 +186,17 @@ function btnRow(g,btn,bi){
   } else if(needText){ extra.appendChild(inp(btn.text,"要发出去的文字",function(v){btn.text=v})) }
   else if(needRun){ extra.appendChild(inp(btn.name,"bedremote.json 里 run 段的命令名",function(v){btn.name=v})) }
   else if(btn.act==="screen"){ extra.appendChild(sel([["tv","非主屏（电视）"],["0","第 1 块屏"],["1","第 2 块屏"]],String(btn.n==null?"tv":btn.n),function(v){btn.n=v})) }
+  else if(btn.act==="macro"){
+    if(!MACROS.length){ extra.appendChild(el("span","hint","电脑上还没有组合动作，点顶栏「组合动作」建一个")) }
+    else{
+      var ms=el("select");ms.style.width="100%";
+      ms.appendChild(el("option","（选一个组合动作）"));
+      MACROS.forEach(function(m){var o=el("option",null,m.name+"（"+m.steps+" 步）");o.value=m.name;
+        if(btn.name===m.name)o.selected=true;ms.appendChild(o)});
+      ms.onchange=function(){btn.name=ms.value;render()};
+      extra.appendChild(ms);
+    }
+  }
   else if(btn.act==="tab"){ extra.appendChild(inp(btn.n,"页签序号（0 起）",function(v){btn.n=v})) }
   else extra.appendChild(el("span","hint","—"));
   tr.appendChild(extra);
@@ -209,6 +226,12 @@ function fire(b){
   else if(b.act==="paste") fetch("/cmd?t="+T+"&c=paste&s="+e(b.text||"测试"),{cache:"no-store"});
   else if(b.act==="screen")fetch("/cmd?t="+T+"&c=screen&n="+e(b.n==null?"tv":b.n),{cache:"no-store"});
   else if(b.act==="run")   fetch("/cmd?t="+T+"&c=run&n="+e(b.name||""),{cache:"no-store"});
+  else if(b.act==="macro"){
+    var mm=null; MACROS.forEach(function(x){if(x.name===b.name)mm=x});
+    if(confirm("现在就把组合动作「"+(b.name||"")+"」跑一遍？它会连着做 "+(mm?mm.steps:"?")+" 步，中间可能有关屏这类动作。"))
+      fetch("/cmd?t="+T+"&c=macro&n="+e(b.name||""),{cache:"no-store"}).then(function(r){return r.text()})
+        .then(function(t){say(t.indexOf("err")===0?"没跑成："+t:t==="ok"?"已经开始跑，进度看手机上的小提示":"回话："+t,t.indexOf("err")!=0)});
+  }
   else if(b.act==="power") alert("关显示器有黑屏风险，编辑器和手机上都要求先弹确认，这里不试。");
   else alert("这个动作没有可试的目标（它是界面行为，不是发给电脑的指令）");
 }
@@ -233,8 +256,108 @@ q("#jsonBtn").onclick=function(){
     catch(e){say("JSON 有问题："+e.message,false)}
   };
 };
-function openDlg(title,body,wide){
-  q("#dlgTitle").textContent=title; q("#dlgBody").innerHTML=body;
+/* ---------- 组合动作编辑器 ---------- */
+/* 一步就是一句 /cmd 查询串。这里**不翻译、不包装**：编辑器里看到什么，电脑上跑的就是什么。
+   故意的 —— 一旦在这里做一套"步骤对象"，电脑上就得有第二份"动作是什么意思"的解释表，
+   手机 fire()、这里、宏三处早晚对不上。给模板只是教他怎么写，不是替他换一种语言。 */
+var STEP_TPL=[
+ ["c=key&k=playpause","按键（改 k= 换成别的键）"],
+ ["c=combo&k=s&m=ctrl","组合键 Ctrl+S"],
+ ["c=text&s=要打的字","输入一段文字"],
+ ["c=screen&n=tv","把鼠标扔到电视屏"],
+ ["c=run&n=命令名","启动 run 白名单里的命令"],
+ ["c=power","关掉显示器（动鼠标就回来）"],
+ ["c=blank&mt=268","让某块屏无信号（mt=屏号）"],
+ ["c=wake&mt=268","唤醒某块屏"],
+ ["c=only&mt=268","只留某块屏（它当主屏）"],
+ ["c=awake&on=0","取消防睡眠"],
+ ["c=notify&s=跑完了","往手机推一条消息"],
+ ["c=djstop","停掉同播"],
+ ["wait=800","等 0.8 秒"]
+];
+q("#macroBtn").onclick=function(){
+  fetch("/macros?t="+encodeURIComponent(T),{cache:"no-store"}).then(function(r){return r.json()}).then(function(obj){
+    var L=[]; Object.keys(obj||{}).forEach(function(k){ L.push({name:k,steps:(obj[k]||[]).slice()}) });
+    openDlg("组合动作（一键连发几条指令）",'<div id="mdb"></div>'+
+      '<p class="hint"><b>一步 = 一句发给电脑的指令</b>，和手机按钮、脚本 curl 用的是同一套动作；'+
+      '要停顿就写 <code>wait=800</code>（毫秒）。最多 32 步。</p>'+
+      '<p class="hint">跑在<b>电脑上</b>：按完这一次，手机可以立刻锁屏、扣在床头，剩下的步骤照样做完。'+
+      '一次只跑一个，手机上按同一个按钮不会叠着跑。</p>'+
+      '<p class="hint">建好之后：在某个按钮里把动作选「组合动作」，再挑它的名字。手机上按那个按钮就是这一串。</p>',true);
+    var host=q("#mdb");
+    function draw(){
+      host.innerHTML="";
+      if(!L.length)host.appendChild(el("p","hint","还没有组合动作，点下面「＋ 新建」"));
+      L.forEach(function(m,i){
+        var card=el("div","grp");
+        var h=el("h3");
+        var nm=el("input");nm.value=m.name;nm.placeholder="动作名（按钮里就选它）";nm.style.flex="0 0 200px";
+        nm.oninput=function(){m.name=nm.value};
+        h.appendChild(el("span",null,"组合动作"));h.appendChild(nm);
+        var del=el("button",null,"删掉这个");del.style.color="#ff6b6b";
+        del.onclick=function(){if(confirm("删掉「"+(m.name||"")+"」？用到它的按钮会变成空动作。")){L.splice(i,1);draw()}};
+        var tp=el("select");tp.style.flex="0 0 220px";
+        STEP_TPL.forEach(function(s){var o=el("option",null,s[1]);o.value=s[0];tp.appendChild(o)});
+        var add=el("button",null,"＋ 步骤");
+        add.onclick=function(){m.steps.push(tp.value);draw()};
+        h.appendChild(add);h.appendChild(tp);h.appendChild(del);
+        card.appendChild(h);
+        if(!m.steps.length)card.appendChild(el("p","hint","还没有步骤 —— 空动作保存时会被丢掉"));
+        m.steps.forEach(function(s,si){
+          var row=el("div");row.style.cssText="display:flex;gap:6px;margin:4px 0";
+          var in2=el("input");in2.value=s;in2.style.flex="1";in2.style.fontFamily="Consolas,monospace";
+          in2.oninput=function(){m.steps[si]=in2.value};
+          var u=el("button",null,"↑"),d2=el("button",null,"↓"),x=el("button",null,"删");
+          u.onclick=function(){if(si>0){var t2=m.steps[si-1];m.steps[si-1]=m.steps[si];m.steps[si]=t2;draw()}};
+          d2.onclick=function(){if(si<m.steps.length-1){var t2=m.steps[si+1];m.steps[si+1]=m.steps[si];m.steps[si]=t2;draw()}};
+          x.onclick=function(){m.steps.splice(si,1);draw()};
+          [u,d2,x].forEach(function(b){b.style.padding="5px 9px"});
+          row.appendChild(in2);row.appendChild(u);row.appendChild(d2);row.appendChild(x);
+          card.appendChild(row);
+        });
+        var run=el("button",null,"就跑一次试试");run.style.marginTop="6px";
+        run.onclick=function(){
+          if(!m.name){say("先起个名字",false);return}
+          if(!confirm("现在就把「"+m.name+"」跑一遍？它会连着做 "+m.steps.length+" 步，中间可能有关屏这类动作。"))return;
+          fetch("/cmd?t="+encodeURIComponent(T)+"&c=macro&n="+encodeURIComponent(m.name),{cache:"no-store"})
+            .then(function(r){return r.text()}).then(function(t){
+              say(t.indexOf("err")===0?"没跑成："+t.slice(4):"已经开始跑（还没保存，先点上面的保存并生效）",t.indexOf("err")!=0);
+            });
+        };
+        card.appendChild(run);
+        host.appendChild(card);
+      });
+      var nb=el("button",null,"＋ 新建组合动作");nb.style.marginTop="10px";
+      nb.onclick=function(){L.push({name:"新动作"+(L.length+1),steps:["c=key&k=playpause"]});draw()};
+      host.appendChild(nb);
+    }
+    draw();
+    q("#dlgApply").onclick=function(){
+      var o={},bad=null;
+      L.forEach(function(m){
+        var nm=(m.name||"").trim();
+        var st=[];m.steps.forEach(function(s){s=(s||"").trim();if(s)st.push(s)});
+        if(!nm||!st.length)return;                      // 没名字或没步骤 = 没写完，静默丢掉
+        if(o[nm]){bad="动作名重复："+nm;return}
+        o[nm]=st;
+      });
+      if(bad){say(bad,false);return}
+      fetch("/macros/save?t="+encodeURIComponent(T),{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+        body:"j="+encodeURIComponent(JSON.stringify(o)),cache:"no-store"})
+      .then(function(r){return r.json().then(function(j){return {ok:r.ok&&j.ok,err:j.err}})})
+      .then(function(x){
+        if(!x.ok){say("保存失败："+(x.err||"不知道哪里不对"),false);return}
+        say("组合动作已保存并生效",true);
+        fetch("/macros?t="+encodeURIComponent(T)).then(function(r){return r.json()}).then(function(obj){
+          MACROS=Object.keys(obj||{}).map(function(k){return {name:k,steps:(obj[k]||[]).length}});
+          closeDlg();render();
+        });
+      }).catch(function(e){say("保存失败："+e,false)});
+    };
+  },function(){say("读不到组合动作（电脑上的 bedremote 太旧？)",false)});
+};
+
+function openDlg(title,body,wide){  q("#dlgTitle").textContent=title; q("#dlgBody").innerHTML=body;
   q("#dlgApply").style.display=wide?"":"none";
   q("#dlgApply").onclick=closeDlg;
   q("#dlg").showModal();

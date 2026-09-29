@@ -291,6 +291,12 @@ static class Config
     // 偏移**可以为负**（耳机比电视慢就填正、快就填负），所以它不能走 SetNum —— SetNum 把负数当"删掉这一项"。
     public static List<string> MusicDirs = new List<string>();
     public static int DjOffset = 0;
+    /// <summary>
+    /// 组合动作：名字 -> 步骤。步骤 = 一句 /cmd 查询串（"c=key&k=playpause"）或一句等待（"wait=400"）。
+    /// 一个宏最多 32 步（再多就不是"顺手一键"，是在配置文件里写脚本了，那种东西该用计划任务）。
+    /// </summary>
+    public const int MaxMacroSteps = 32;
+    public static Dictionary<string, List<string>> Macros = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
     public static string NameOrMachine()
     {
@@ -427,6 +433,27 @@ static class Config
             DjOffset = (int)Json.Num(Json.Get(root, "djOffset"), 0);
             if (DjOffset < -2000) DjOffset = -2000;
             if (DjOffset > 2000) DjOffset = 2000;
+            // 组合动作（宏）：名字 -> 一串步骤。步骤就是一句 /cmd 的查询串，或者 "wait=毫秒"。
+            // 故意不做成"另一种动作语言"：这样电脑上 Dispatch 里那条动作表是**唯一一份**，
+            // 宏能用的动作 = 手机/脚本能用的动作，不会两边各长出一套语义（见 src\Macros.cs 顶部）。
+            Macros = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            object mx = Json.Get(root, "macros");
+            if (mx != null)
+                foreach (var kv in Json.Obj(mx))
+                {
+                    string nm = kv.Key.Trim();
+                    if (nm.Length == 0) continue;
+                    if (nm.Length > 40) nm = nm.Substring(0, 40);
+                    var steps = new List<string>();
+                    foreach (object o in Json.Arr(kv.Value))
+                    {
+                        string s = Json.Str(o, "").Trim();
+                        if (s.Length == 0) continue;
+                        if (s.Length > 400) s = s.Substring(0, 400);        // 一行步骤不该比一条命令长
+                        if (steps.Count < MaxMacroSteps) steps.Add(s);
+                    }
+                    if (steps.Count > 0 && !Macros.ContainsKey(nm)) Macros[nm] = steps;
+                }
             Loaded = true;
         }
         catch (Exception ex)
@@ -437,6 +464,7 @@ static class Config
             Gamepad = new Dictionary<string, object>();
             Name = "";
             ScreenNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            Macros = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         }
         if (Port < 1 || Port > 65535) Port = 8765;
     }
@@ -545,6 +573,54 @@ static class Config
         tok = (tok ?? "").Trim();
         Token = tok;
         return Mutate("token", (object)tok, out err);
+    }
+
+    // 编辑器保存组合动作用这个：整段替换 macros 键（跟 SavePanels 一个道理，只做字符串手术的话
+    // 手改过的其它键会被冲掉）。校验放在这里，别等到跑的时候才炸。
+    public static bool SetMacros(string macrosJson, out string err)
+    {
+        err = null;
+        try
+        {
+            var raw = Json.Obj(Json.Parse(string.IsNullOrEmpty(macrosJson) ? "{}" : macrosJson));
+            var next = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var kv in raw)
+            {
+                string nm = kv.Key.Trim();
+                if (nm.Length == 0) continue;
+                if (nm.Length > 40) { err = "动作名太长了（" + nm + "，最多 40 字）"; return false; }
+                var steps = new List<string>();
+                foreach (object o in Json.Arr(kv.Value))
+                {
+                    string s = Json.Str(o, "").Trim();
+                    if (s.Length == 0) continue;
+                    if (s.Length > 400) { err = "「" + nm + "」有一步太长（最多 400 字）"; return false; }
+                    if (steps.Count >= MaxMacroSteps) { err = "「" + nm + "」步骤太多（上限 " + MaxMacroSteps + " 步）"; return false; }
+                    steps.Add(s);
+                }
+                if (steps.Count == 0) continue;            // 空动作直接丢掉，别留个按了没反应的按钮
+                next[nm] = steps;
+            }
+            if (next.Count > 40) { err = "组合动作太多（" + next.Count + " > 40）"; return false; }
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            if (next.Count == 0) root.Remove("macros");
+            else
+            {
+                var obj = new Dictionary<string, object>();
+                foreach (var kv in next)
+                {
+                    var arr = new List<object>();
+                    foreach (string s in kv.Value) arr.Add(s);
+                    obj[kv.Key] = arr;
+                }
+                root["macros"] = obj;
+            }
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            Macros = next;
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
     }
 
     // 图形界面改开关用这个：解析 → 只换那一个键 → 写回，别在界面里做字符串手术。

@@ -81,6 +81,12 @@ nav button.sel{background:#17171d;color:#fff;box-shadow:inset 0 2px 0 var(--acc)
 .note{font-size:11px;color:var(--dim);margin-top:10px;line-height:1.6}
 #lock{position:fixed;left:0;right:0;top:0;background:#5a2318;color:#ffd9d0;font-size:12px;
  padding:6px 10px;display:none;z-index:60}
+/* 组合动作的进度：底部一个会自己消失的小条。#log 只在 Agent 页里，而"睡前一键"按完
+   人就把手机放下了 —— 进度必须在他当前那一页上看得见，哪怕只看一眼。 */
+#toast{position:fixed;left:50%;bottom:74px;transform:translateX(-50%);background:rgba(20,22,26,.93);
+ color:#e8e8ee;border:1px solid #2c2f36;padding:8px 15px;border-radius:999px;font-size:13px;
+ z-index:66;display:none;max-width:86vw;text-align:center;line-height:1.4}
+#toast.on{display:block}
 /* ---- 多台电脑：顶部这台叫什么 + 一键换一台的名单 ---- */
 #mname{color:var(--acc);font-weight:700;max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #mach{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;flex-direction:column;z-index:72;padding:14px;overflow:auto}
@@ -180,6 +186,7 @@ body.gpf #gp{height:100%;border:none;border-radius:0}
 </head>
 <body>
 <div id="lock"></div>
+<div id="toast"></div>
 <div id="bar"><span id="dot"></span><span id="rtt">—</span><span id="mname"></span><button id="swb">换一台</button><span id="devs"></span><span id="win">连接中…</span>
  <button id="fsb">⛶</button><button id="qrb">加设备</button><button id="editb">改按钮</button></div>
 <main id="main"></main>
@@ -198,7 +205,7 @@ body.gpf #gp{height:100%;border:none;border-radius:0}
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 // 页面自己的版本号。服务端版本比它新就说明"你手里这个标签页是旧的"，自动刷一次。
 // 不加这个的话，我改了行为你却还在跑旧 JS，看起来就像"功能坏了/关不上"——今晚真的踩过。
-var BUILD="0.13.0";
+var BUILD="0.14.0";
 // ---------- 这台手机的设备编号 ----------
 // 口令是一把共用钥匙：给出去收不回来，而且电脑上分不清"这台是谁"。
 // 所以第一次带正确口令进来时，电脑顺手把这一串编号记下来（=配对）；以后不用再输口令，
@@ -297,6 +304,12 @@ function sse(){
     else if(d.e==="mons")loadMons();
     else if(d.e==="peers")showPeers(d);
     else if(d.e==="kick")blocked("主人在电脑上把这台设备从名单里踢掉了。要回来：让他在「门禁」那一栏重新给你一次二维码。");
+    else if(d.e==="macro"){
+      // 保存配置时也会推一条空的 macro，那只是"名单变了"，别弹个空条
+      if(!d.n){loadPanel();return}
+      if(d.done)toast("组合动作「"+d.n+"」做完了");
+      else if(d.i)toast("「"+d.n+"」第 "+d.i+"/"+d.of+" 步"+(d.ack&&d.ack.indexOf("err")===0?" 没成："+d.ack.slice(4):""));
+    }
     else if(d.e==="tok")showLock("电脑上的口令刚刚改过了 —— 这个页面马上就会不再被认，要用新地址重新打开一次",true);
     else if(d.e==="ver"){
       // 服务端比这个标签页新 → 自己刷一次（sessionStorage 保证只刷一次，不会来回刷）
@@ -319,6 +332,13 @@ function showLock(t,keep){var e=$("#lock");e.textContent=t;e.style.display="bloc
   // UAC 那种要人去点一下的，红条多留一会（20 秒），别一闪就没让人以为是自己手滑
   e._t=setTimeout(function(){e.style.display="none"},keep?20000:9000)}
 function hideLock(){var e=$("#lock");if(e){clearTimeout(e._t);e.style.display="none"}}
+// 一条会自己消失的小提示。组合动作的进度走这里（#log 在 Agent 页里，按完手机就扣在床上了看不见）
+var toastT=0;
+function toast(t,keep){
+  var e=$("#toast"); if(!e)return;
+  e.textContent=t; e.classList.add("on");
+  clearTimeout(toastT); toastT=setTimeout(function(){e.classList.remove("on")},keep?6000:2600);
+}
 
 /* ---------- 动作 DSL ---------- */
 function fire(b){
@@ -334,6 +354,9 @@ function fire(b){
   else if(a==="power")   send("c=power");
   else if(a==="awake"){ awake=!awake; send("c=awake&on="+(awake?1:0)); }
   else if(a==="run")     send("c=run&n="+e(b.name||""));
+  // 组合动作：命令在电脑上按序跑，所以手机这一端只管发起 + 报错，进度靠 SSE 推回来的 toast
+  else if(a==="macro")   send("c=macro&n="+e(b.name||"")).then(function(x){
+                           if(x&&x.indexOf("err:")===0)toast(x.slice(4),true); else if(x==="err")toast("电脑没应答");});
   else if(a==="reload")  location.reload();
   else if(a==="tab")     show(+b.n||0);
   else if(a==="clearmods") clearMods();

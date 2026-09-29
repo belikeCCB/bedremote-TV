@@ -20,6 +20,7 @@ $cscArgs = @(
   (Join-Path $root 'src\Wizard.cs'),
   (Join-Path $root 'src\Mates.cs'),
   (Join-Path $root 'src\Devices.cs'),
+  (Join-Path $root 'src\Macros.cs'),
   (Join-Path $root 'src\BedRemote.cs')
 )
 & $csc @cscArgs

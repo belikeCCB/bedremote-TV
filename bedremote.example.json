@@ -25,6 +25,11 @@
   "musicDirs": ["D:\\音乐"],
   "djOffset": 0,
 
+  "macros": {
+    "睡前一键": ["c=key&k=playpause", "wait=400", "c=screen&n=tv", "c=power"],
+    "开始剪片": ["c=run&n=播放器", "wait=2500", "c=screen&n=tv"]
+  },
+
   "panels": {
     "tabs": [
       {

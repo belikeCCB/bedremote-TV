@@ -11,7 +11,9 @@ Run `bedremote.exe` (built with the `csc.exe` that ships with Windows: no instal
 dependencies), open `http://<pc-ip>:8765/` on a phone on the same LAN, and you get a trackpad with dedicated
 click keys, a gamepad overlay you can lay out with your fingers, big editable buttons, per-monitor power/source
 control, clipboard-based typing of CJK text straight into the focused field, LAN discovery so one phone can hop
-between many PCs, and an HTTP endpoint for scripts to push messages to your phone and wait for a yes/no.
+between many PCs, an HTTP endpoint for scripts to push messages to your phone and wait for a yes/no,
+and **composite actions** (one button runs a short sequence of commands on the PC, with waits — so the
+phone can be put down before it finishes).
 It is **not** a remote desktop: if you want the picture on the phone, use Sunshine + Moonlight.
 Security warning, said plainly: by default anything on your LAN can control the machine, and there is no login.
 The GUI has an access-control panel (门禁) for that: one click sets a random token and it takes effect **without
@@ -359,9 +361,41 @@ any single one of them later. See [SECURITY.md](SECURITY.md).
 | `power` | — | 关闭显示器（动一下鼠标就回来） |
 | `awake` | — | 切换"防睡眠" |
 | `run` | `name` | 运行 `bedremote.json` 里 `run` 段**白名单**中写好的命令名 |
+| `macro` | `name` | 发起一个**组合动作**（`macros` 段里写好的那一串步骤），见下一节 |
 | `reload` / `tab` / `clearmods` | `tab` 需 `n` | 纯手机端行为 |
 
 每个按钮还能带 `label` `sub`（副标题）`confirm`（点击前弹确认）`class`。
+
+## 组合动作（一个按钮连着发几条指令）
+
+一个按钮只能干一件事，而"睡前"其实是三件：暂停播放 → 把鼠标扔到电视屏 → 关显示器。
+`bedremote.json` 里写一段 `macros` 就行：
+
+```json
+"macros": {
+  "睡前一键": ["c=key&k=playpause", "wait=400", "c=screen&n=tv", "c=power"],
+  "开始剪片": ["c=run&n=播放器", "wait=2500", "c=key&k=f"]
+}
+```
+
+**一步 = 一句 `/cmd` 的查询串**，或者一句 `wait=毫秒`。这不是偷懒的格式，是刻意的：
+一旦在这里另做一套"步骤对象"，电脑上就得有第二份"这个动作是什么意思"的解释表
+（手机一份、编辑器一份、宏一份，三份早晚对不上）。现在宏能用的动作 = 手机能用的 = `curl` 能用的。
+
+手机上按下去看得见进展：每一步推一条 SSE，页面底部弹一条自己消失的小提示
+（「睡前一键」第 2/4 步 → 做完了）。**进度没放在 Agent 页那块日志里** —— "睡前"这个动作按完就是把手机扣在床头。
+
+三件事值得知道：
+
+- **跑在电脑上**：`c=macro&n=…` 立刻返回，剩下的步骤在后台做完，所以手机可以马上锁屏、切后台、关掉页面。
+  这是"在手机上做连点"替代不了的那部分。
+- **一次只跑一个**：还在跑的时候再按会被拒（不会叠着跑），`c=macrostop` 可以叫停（当前那一步做完就停）。
+- **不许宏套宏**：两个宏互相引用就是死循环，而线程是从池里拿的，绕起来没人收尸。上限 32 步、
+  单步等待最多 60 秒、整个宏超过 180 秒就收工 —— 再长就不该是"顺手一键"。
+
+编辑器里点顶栏「组合动作」可以直接建、改步骤顺序、试跑一次，保存后**不用重启就生效**；
+然后回到按钮那一行把动作选「组合动作」、挑它的名字。不想开编辑器就直接写那段 JSON
+（`tools\cfgprobe-run.ps1` 会告诉你哪一步写歪了 —— 写歪的步骤不会崩，只会"什么也没做"，最难查）。
 
 ## 提权通行证（那些"要管理员权限"的软件）
 
@@ -467,6 +501,7 @@ curl "http://127.0.0.1:8765/ask?text=要现在下载吗"
 | `GET /addr` | 给配对页用：`{"port":..,"token":..,"online":..,"devs":..,"https":..,"peers":[..],"ips":[..]}` |
 | `GET /vendor/*` | 只放行 `www\vendor\` 下的 js/css，挡 `..` |
 | `GET /panel` · `POST /panel/save` | 读 / 写面板定义 |
+| `GET /macros` · `POST /macros/save` | 读 / 写组合动作整段（编辑器用；保存后不用重启就生效） |
 | `GET /gamepad` · `POST /gamepad/save` | 读 / 写「手柄」布局（`gamepad` 段）。电脑只是替手机存着，不解释内容；按钮数上限 64 |
 | `GET /dj` | 电脑那侧的"跟着手机放"播放页（见《两边一起放同一首歌》） |
 | `GET /media?f=<路径>` | 放给两边的音频/视频文件。**只认 `musicDirs` 目录里的路径**（规范化后比前缀，挡 `..`），支持 `Range`/206 —— 不然手机上拖不动进度 |
@@ -485,6 +520,9 @@ curl "http://127.0.0.1:8765/ask?text=要现在下载吗"
 | `GET /cmd?c=release` | 这台设备立刻松手（手机切页签/关页面时用 beacon 发） |
 | `GET /cmd?c=devs` | 已配对设备名单：`[{id,name,ago,added}]`（`ago`=多少秒前活动过，`added`=配对的时刻） |
 | `GET /cmd?c=kick&who=<编号>` | 把这台设备从名单里删掉并当场断开它的长连接。**目标是 `who`，`d` 是"我是谁"**；改口令不在手机上做（只在电脑界面） |
+| `GET /cmd?c=macros` | 组合动作名单：`[{"name":"睡前一键","steps":4}]` |
+| `GET /cmd?c=macro&n=<名字>` | 发起一个组合动作：**立刻返回 `ok`，步骤在电脑后台跑完**（手机可以马上锁屏放下）。没这个名字 / 正在跑别的 / 宏里套宏 → `err:…` |
+| `GET /cmd?c=macrostatus` · `c=macrostop` | 在跑哪个、第几步；叫停（当前那一步做完就停） |
 | `GET /cmd?c=lag&t0=<手机自己的时间戳>` | 延迟探针：不注入任何东西，把 `t0` 原样从 SSE 退回（`{"e":"lag","t0":..,"srv":毫秒}`），手机用同一个钟算差值 |
 | `GET /cmd?c=<动作>&...` | 所有控制指令 |
 | `GET /cmd?c=open&u=<链接>` | 「丢到电脑」：用默认浏览器打开这个链接。只认 `http(s)://`、限 2000 字符、不许空格/引号/管道；`allowOpen:false` 可整条关掉；每次打开都写日志 |
@@ -517,6 +555,7 @@ curl "http://127.0.0.1:8765/ask?text=要现在下载吗"
 { "port": 8765, "name": "7号机", "token": "", "keepAwake": true, "denyWhenLocked": true,
   "ddcOff": false, "https": true, "ca": false, "allowOpen": true,
   "musicDirs": ["D:\\音乐"], "djOffset": 40,
+  "macros": { "睡前一键": ["c=key&k=playpause", "wait=400", "c=screen&n=tv", "c=power"] },
   "screenNames": { "512": "左边竖屏" },
   "run": { "mpv": "mpv --loop=inf D:\\movie.mkv" },
   "elevatedRun": [ "mpv" ],
@@ -661,6 +700,7 @@ src\Wizard.cs      「往手机上加个软件」向导：写白名单 + 加手�
 src\Audio.cs       同播：手机/电脑两边位置的中继（服务器盖自己的钟）+ `musicDirs` 白名单发文件（支持 Range/206）
 src\Mates.cs       多机发现：UDP 心跳（有限广播 + 每网卡定向广播）、名单、过期、单播问一圈
 src\Devices.cs     已配对设备名单：口令带对那次顺手记下设备编号，之后可以一台一台踢（存 devices.json）
+src\Macros.cs      组合动作：按 bedremote.json 的 macros 段，在后台线程把一串 /cmd 指令按序跑完（带 wait）
 www\phone.html     手机端界面（配置驱动 + 内置触控板/陀螺仪/手柄/丢过去/打字/屏幕/同播/Agent）
 www\edit.html      面板编辑器
 www\dj.html        电脑那侧"跟着手机放"的播放页（同播）
@@ -680,6 +720,9 @@ tools\secauth.ps1  门禁回归：起一个沙箱实例，验"没凭据/错口�
 tools\uiguard.ps1  界面那半边：驱动真窗口的真按钮 —— 点「应用」之后同一个进程里新口令立刻生效、
                    HTTP 配对的设备出现在名单里、选中一行点「踢掉这一台」真的踢掉（顺便产出截图）
 tools\cfgprobe.cs  拿真的 Config.Load 读一份配置，看你改的有没有被悄悄退回默认（见《配置》）
+tools\cfgprobe-run.ps1 编译 cfgprobe + 跑正/负对照（示例配置读得通；故意写歪一步要报出来），CI 直接调它
+tools\mactest.ps1  组合动作回归：进度真的从 SSE 出来、wait 真的延后、一次只跑一个、叫停有效、
+                   编辑器保存后不重启就生效、40 步被夹成 32、坏保存不动原名单和文件（负对照）
 tools\gpharness.js 手柄那段 JS 的假 DOM（不弹浏览器、不注入任何东西地跑输入→发帧那条链）
 tools\gpfitcheck.js 跑上面的假 DOM，验十种画布比例下布局不撞不出界、拖过边能拖回来
 tools\keystateprobe.cs 轮询 GetAsyncKeyState，证明"注入真的落到系统键态里了"

@@ -39,6 +39,8 @@ static class CfgProbe
         Line("elevatedRun", Config.ElevatedRun == null ? "0" : string.Join(",", Config.ElevatedRun.ToArray()));
         Line("screenNames", Config.ScreenNames == null ? "0" : Config.ScreenNames.Count.ToString());
         Line("gamepad", Config.Gamepad == null ? "(无)" : "键 " + Config.Gamepad.Count + " 个");
+        int mc = Config.Macros == null ? 0 : Config.Macros.Count;
+        Line("macros", mc.ToString());
 
         // panels 是"改了没生效"最容易发生的一段：结构错了服务端会整段忽略，只剩内置那页。
         int tabs = 0, groups = 0, buttons = 0;
@@ -62,8 +64,11 @@ static class CfgProbe
                         string act = Json.Str(Json.Get(b, "act"), "");
                         // 面板按钮的动作必须是服务端认识的，写错就是"点了没反应"
                         if (act.Length == 0) err += "  有个按钮没写 act\n";
+                        // tab / clearmods / macro 是手机页自己解释的（切页签、清修饰键、发起一个组合动作），
+                        // 不走输入指令那条路，所以 IsInputCmd 不认它们。
                         else if (!Program.IsInputCmd(act) && act != "reload" && act != "awake" &&
-                                 act != "confirm" && act != "notify" && act != "open" && act != "screen")
+                                 act != "confirm" && act != "notify" && act != "open" && act != "screen" &&
+                                 act != "tab" && act != "clearmods" && act != "macro")
                             err += "  act=\"" + act + "\" 服务端没这个动作\n";
                     }
                 }
@@ -72,6 +77,18 @@ static class CfgProbe
         catch (System.Exception e) { err += "panels 结构读不动：" + e.Message + "\n"; }
 
         Line("panels", tabs + " 页 / " + groups + " 组 / " + buttons + " 个按钮");
+
+        // 组合动作：一步 = 一句 /cmd 查询串（"c=key&k=esc"）或一句等待（"wait=400"）。
+        // 写歪了不会崩，只会"那一步什么也没做"——这种静默失败最难查，所以这里替人验形状。
+        if (Config.Macros != null)
+            foreach (var mkv in Config.Macros)
+                foreach (string s in mkv.Value)
+                {
+                    bool okStep = s.StartsWith("wait=", System.StringComparison.OrdinalIgnoreCase) ||
+                                  s.StartsWith("c=", System.StringComparison.OrdinalIgnoreCase);
+                    if (!okStep) err += "  组合动作「" + mkv.Key + "」有一步既不是 c=... 也不是 wait=...：" + s + "\n";
+                }
+
         System.Console.WriteLine(err.Length == 0 ? "按钮动作都认。" : err.TrimEnd());
         // 配置没读成功却又"看起来正常"（退回默认）是最坑的一种，给它个非零退出码，脚本能接住
         return Config.Loaded && err.Length == 0 ? 0 : 1;

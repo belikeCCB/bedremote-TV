@@ -521,7 +521,7 @@ static class Program
     static string DataDir = "";
     static long Started = 0;
     static volatile bool Awake = true;
-    internal const string Version = "bedremote 0.13.0";
+    internal const string Version = "bedremote 0.14.0";
 
     static void Help()
     {
@@ -1318,17 +1318,7 @@ static class Program
                 r.Body = Encoding.UTF8.GetString(body, 0, got);
                 ParseForm(r.Body, r.Form);
             }
-            foreach (var kv in r.Query.Split('&'))
-            {
-                if (kv.Length == 0) continue;
-                int eq = kv.IndexOf('=');
-                string k = eq < 0 ? kv : kv.Substring(0, eq);
-                string v = eq < 0 ? "" : kv.Substring(eq + 1);
-                k = Uri.UnescapeDataString(k);
-                v = Uri.UnescapeDataString(v.Replace('+', ' '));
-                if (!r.Form.ContainsKey(k)) r.Form[k] = v;
-                r.Form["q_" + k] = v;
-            }
+            ParseQuery(r.Query, r.Form);
 
             if (r.Path == "/favicon.ico") { Write(s, 204, "text/plain", new byte[0], r); c.Close(); return; }
 
@@ -1485,6 +1475,23 @@ static class Program
                             Encoding.UTF8.GetBytes("{\"ok\":false,\"err\":\"" + Json(err) + "\"}"), r);
                         break;
                     }
+                // 组合动作用的读/写口（编辑器走这里，不直接碰 bedremote.json）
+                case "/macros":
+                    Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(MacroRun.FullJson()), r);
+                    break;
+                case "/macros/save":
+                    {
+                        string err;
+                        if (Config.SetMacros(G(r, "j", r.Body ?? "{}"), out err))
+                        {
+                            Log("[宏] 组合动作已保存：" + (r.Remote ?? "?"));
+                            Broadcast("{\"e\":\"macro\"}");
+                            Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes("{\"ok\":true}"), r);
+                        }
+                        else Write(s, 400, "application/json; charset=utf-8",
+                            Encoding.UTF8.GetBytes("{\"ok\":false,\"err\":\"" + Json(err) + "\"}"), r);
+                        break;
+                    }
                 case "/gamepad":
                     Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(Config.GamepadJson()), r);
                     break;
@@ -1501,8 +1508,7 @@ static class Program
                             Encoding.UTF8.GetBytes("{\"ok\":false,\"err\":\"" + Json(err) + "\"}"), r);
                         break;
                     }
-                case "/dj":
-                    {
+                case "/dj":                    {
                         // 电脑这边那个"跟着手机放"的播放页：浏览器打开它，声音照常走 HDMI 到电视
                         string f = Path.Combine(WwwDir, "dj.html");
                         if (File.Exists(f)) Write(s, 200, "text/html; charset=utf-8", File.ReadAllBytes(f), r);
@@ -1677,6 +1683,24 @@ static class Program
         return true;
     }
 
+    // 查询串 -> Form。除了原来的键，还多存一份带 q_ 前缀的：POST 的表单体和查询串可能同名
+    // （/cmd 的口令在查询串里，体里也可能有 t），鉴权一律读 q_，两边不会互相盖。
+    static void ParseQuery(string query, Dictionary<string, string> into)
+    {
+        if (string.IsNullOrEmpty(query)) return;
+        foreach (var kv in query.Split('&'))
+        {
+            if (kv.Length == 0) continue;
+            int eq = kv.IndexOf('=');
+            string k = eq < 0 ? kv : kv.Substring(0, eq);
+            string v = eq < 0 ? "" : kv.Substring(eq + 1);
+            k = Uri.UnescapeDataString(k);
+            v = Uri.UnescapeDataString(v.Replace('+', ' '));
+            if (!into.ContainsKey(k)) into[k] = v;
+            into["q_" + k] = v;
+        }
+    }
+
     static void ParseForm(string body, Dictionary<string, string> into)
     {
         if (string.IsNullOrEmpty(body)) return;
@@ -1770,7 +1794,7 @@ static class Program
         }
     }
 
-    static void Broadcast(string json)
+    internal static void Broadcast(string json)
     {
         byte[] b = Encoding.UTF8.GetBytes("data: " + json + "\n\n");
         lock (ClientsLock)
@@ -2027,13 +2051,24 @@ static class Program
         return sb.ToString();
     }
 
-    static void Redirect(Stream s, string loc)    {
+    static void Redirect(Stream s, string loc)
+    {
         byte[] hb = Encoding.ASCII.GetBytes("HTTP/1.1 302 Found\r\nLocation: " + loc +
             "\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
         s.Write(hb, 0, hb.Length); s.Flush();
     }
 
+    // HTTP 那层：跑一条指令，把结果写回套接字。
     static void Dispatch(Stream s, Req r)
+    {
+        string body = Cmd(r);
+        Write(s, 200, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes(body), r);
+    }
+
+    // 组合动作要在**进程内**跑一步（不经过网络）。为此把"执行"和"写回"拆开：
+    // Cmd 只负责动作和返回一句话，Dispatch 只负责把它写出去。
+    // 这样动作表仍然只有一份 —— 宏能做的事 = 手机能做的事 = curl 能做的事。
+    static string Cmd(Req r)
     {
         string c = G(r, "c", "");
         string ack = "1";
@@ -2057,9 +2092,7 @@ static class Program
             else switch (c)
             {
                 case "ping":
-                    Write(s, 200, "application/json; charset=utf-8",
-                        Encoding.UTF8.GetBytes("{\"e\":\"pong\",\"ts\":" + G(r, "ts", "0") + "}"), r);
-                    return;
+                    return "{\"e\":\"pong\",\"ts\":" + G(r, "ts", "0") + "}";
 
                 case "move": W32.MoveRelative(GI(r, "dx", 0), GI(r, "dy", 0)); break;
                 case "abs":
@@ -2153,16 +2186,14 @@ static class Program
                         break;
                     }
                 case "power": W32.MonitorOff(); break;
-                case "mons":
-                    Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(MonsJson()), r);
-                    break;
+                // 这两个以前是自己 Write 完再 break，于是同一条连接上被写了**两个** HTTP 响应
+                // （浏览器只读第一个，所以看不出来）。改成 return，一条指令一个响应。
+                case "mons": return MonsJson();
                 case "ddcdbg":
                     {
                         uint du;
-                        if (!uint.TryParse(G(r, "mt", "0"), out du) || du == 0) { ack = "err:要 mt="; break; }
-                        Write(s, 200, "text/plain; charset=utf-8",
-                            Encoding.UTF8.GetBytes(Disp.DdcDebug(du)), r);
-                        break;
+                        if (!uint.TryParse(G(r, "mt", "0"), out du) || du == 0) return "err:要 mt=";
+                        return Disp.DdcDebug(du);
                     }
                 case "blank": case "wake":
                     {
@@ -2341,6 +2372,20 @@ static class Program
                     ack = "ok";
                     break;
 
+                // ---- 组合动作（宏）----
+                // 每一步走的都是同一个 Cmd，所以宏不新增任何能力，只是"一次点击造成多少动作"。
+                // 立刻返回、后台线程跑：手机上按完就可以把手机放下，这才是"睡前一键"的意义。
+                case "macros": ack = MacroRun.ListJson(); break;
+                case "macrostatus": ack = MacroRun.StatusJson(); break;
+                case "macrostop": ack = MacroRun.Stop(); break;
+                case "macro":
+                    {
+                        string e2;
+                        string done = MacroRun.Start(G(r, "n", ""), r.Remote, out e2);
+                        ack = done != null ? "ok" : "err:" + e2;
+                        break;
+                    }
+
                 // ---- 门禁：已配对设备名单 / 踢掉一台 ----
                 // 能发这条指令 = 已经过了 Authed，所以"谁在名单里"这件事本身不算秘密。
                 // 注意这里**故意没有** c=token：改口令只在电脑界面上做。
@@ -2429,6 +2474,18 @@ static class Program
             catch { }
         }
         }
-        Write(s, 200, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes(ack), r);
+        return ack;
+    }
+
+    // 进程内跑一条 /cmd 指令（组合动作用）。by 是"替谁做的"，进台账和日志用。
+    // 口令/设备凭据这一层**不重复校验**：能走到这里的只有两种人 —— 已经过了鉴权的 HTTP 请求，
+    // 和电脑上自己起的界面/宏线程。
+    internal static string RunCmd(string query, string by)
+    {
+        var r = new Req();
+        r.Method = "GET"; r.Path = "/cmd"; r.Remote = by ?? ""; r.Query = query ?? "";
+        ParseQuery(r.Query, r.Form);
+        try { return Cmd(r); }
+        catch (Exception ex) { return "err:" + ex.Message; }
     }
 }
