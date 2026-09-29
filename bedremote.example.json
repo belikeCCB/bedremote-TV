@@ -22,6 +22,9 @@
 
   "screenNames": {},
 
+  "musicDirs": ["D:\\音乐"],
+  "djOffset": 0,
+
   "panels": {
     "tabs": [
       {

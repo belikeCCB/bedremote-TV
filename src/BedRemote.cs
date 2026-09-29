@@ -520,7 +520,7 @@ static class Program
     static string DataDir = "";
     static long Started = 0;
     static volatile bool Awake = true;
-    internal const string Version = "bedremote 0.11.3";
+    internal const string Version = "bedremote 0.12.0";
 
     static void Help()
     {
@@ -1252,11 +1252,12 @@ static class Program
 
     // ---------- HTTP ----------
 
-    class Req
+    internal class Req
     {
         public string Method, Path, Query, Body;
         public Dictionary<string, string> Form = new Dictionary<string, string>();
         public string Remote;
+        public string Range;      // 只有音频/视频那条路用得到（拖进度条、跳秒都要 206）
     }
 
     static void Handle(TcpClient c, System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
@@ -1289,6 +1290,10 @@ static class Program
                 int colon = h.IndexOf(':');
                 if (colon > 0 && h.Substring(0, colon).Trim().ToLowerInvariant() == "content-length")
                     int.TryParse(h.Substring(colon + 1).Trim(), out len);
+                // 播放器的 Range 头必须留：不支持 206 的话，手机上进度条拖不动、
+                // 电脑端被命令"跳到 12.382 秒"也跳不过去（浏览器会重新要整个文件）
+                if (colon > 0 && h.Substring(0, colon).Trim().ToLowerInvariant() == "range")
+                    r.Range = h.Substring(colon + 1).Trim();
             }
             if (len > 0)
             {
@@ -1474,6 +1479,31 @@ static class Program
                             Encoding.UTF8.GetBytes("{\"ok\":false,\"err\":\"" + Json(err) + "\"}"), r);
                         break;
                     }
+                case "/dj":
+                    {
+                        // 电脑这边那个"跟着手机放"的播放页：浏览器打开它，声音照常走 HDMI 到电视
+                        string f = Path.Combine(WwwDir, "dj.html");
+                        if (File.Exists(f)) Write(s, 200, "text/html; charset=utf-8", File.ReadAllBytes(f), r);
+                        else Write(s, 500, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("找不到 www\\dj.html"), r);
+                        break;
+                    }
+                case "/media":
+                    {
+                        // 把音乐文件发给两边。只认配置里 musicDirs 列出的目录之内的文件，
+                        // 路径先规范化再比前缀 —— 不然 "..\..\Windows\xxx" 就成了任意文件读取。
+                        string f; r.Form.TryGetValue("f", out f);
+                        if (string.IsNullOrEmpty(f)) { Write(s, 400, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("缺 f 参数"), r); break; }
+                        string full;
+                        if (!Media.InRoots(f, out full))
+                        {
+                            Log("[同播] 拒绝越界的路径：" + f + "  <- " + (r.Remote ?? "?"));
+                            Write(s, 403, "text/plain; charset=utf-8",
+                                Encoding.UTF8.GetBytes("这个文件不在允许列表里（要在 bedremote.json 的 musicDirs 目录下）"), r);
+                            break;
+                        }
+                        Media.Serve(s, c, r, full);
+                        c.Close(); return;
+                    }
                 case "/edit":
                     {
                         string f = Path.Combine(WwwDir, "edit.html");
@@ -1557,6 +1587,24 @@ static class Program
         }
         if (c < 0 && sb.Length == 0) return null;
         return sb.ToString();
+    }
+
+    // 单调毫秒钟。不用 Environment.TickCount 是因为它 25 天会绕回，
+    // 而"两边差多少毫秒"这种量最怕的就是绕回那一刻算出个负数。
+    static readonly System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
+    internal static long NowMs() { return Clock.ElapsedMilliseconds; }
+
+    // 只发头不发体（音频那种流式响应、以及 416 这种空响应要用）
+    internal static void WriteHead(Stream s, int code, params string[] extra)
+    {
+        var sb = new StringBuilder();
+        sb.Append("HTTP/1.1 ").Append(code).Append(code == 200 ? " OK" : " Partial").Append("\r\n");
+        sb.Append("Content-Length: 0\r\n");
+        sb.Append("Cache-Control: no-store\r\n");
+        for (int i = 0; i < extra.Length; i++) sb.Append(extra[i]).Append("\r\n");
+        sb.Append("Connection: close\r\n\r\n");
+        byte[] hb = Encoding.ASCII.GetBytes(sb.ToString());
+        s.Write(hb, 0, hb.Length); s.Flush();
     }
 
     static void Write(Stream s, int code, string ctype, byte[] body, Req r)
@@ -2121,6 +2169,40 @@ static class Program
                         break;
                     }
                 case "awake": Awake = G(r, "on", "1") == "1"; W32.KeepAwake(Awake); break;
+
+                // ---- 同播：手机是主、电脑是从，校正只作用在电脑这一侧 ----
+                case "tracks": ack = Media.ListJson(); break;
+                case "djbeat":
+                    // 手机每 250ms 报一次"我在这首歌的第几秒"。服务器当场盖上自己的钟，
+                    // 电脑播放页和服务器同一台机器、同一个钟 —— 所以不需要两端对表。
+                    Dj.Beat(G(r, "pos", ""), G(r, "play", "0"), G(r, "u", ""), G(r, "n", ""));
+                    ack = "ok";
+                    break;
+                case "djvol":
+                    Dj.SetVol(G(r, "v", "1"));
+                    Broadcast("{\"e\":\"djvol\"}");
+                    ack = "ok";
+                    break;
+                case "djpc":
+                    Dj.PcBeat(G(r, "pos", ""), G(r, "rate", "1"));
+                    ack = Dj.StateJson();       // 顺手把该跟到的位置带回去，省一次轮询
+                    break;
+                case "djstate": ack = Dj.StateJson(); break;      // 电脑播放页轮询
+                case "djgap": ack = Dj.GapJson(); break;          // 手机显示"两边差多少毫秒"
+                case "djoff":
+                    {
+                        int ms;
+                        if (!int.TryParse(G(r, "ms", ""), out ms)) { ack = "bad"; break; }
+                        Dj.SetOffset(ms);
+                        Broadcast("{\"e\":\"djoff\",\"t\":" + Dj.Offset + "}");
+                        ack = "ok:" + Dj.Offset;
+                        break;
+                    }
+                case "djstop":
+                    Dj.Stop();
+                    Broadcast("{\"e\":\"djstop\"}");
+                    ack = "ok";
+                    break;
 
                 // ---- 多机：名单 / 改名 / 扫一段 / 把面板推给同伴 ----
                 case "mates": ack = Mates.ListJson(); break;

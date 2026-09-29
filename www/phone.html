@@ -198,7 +198,7 @@ body.gpf #gp{height:100%;border:none;border-radius:0}
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 // 页面自己的版本号。服务端版本比它新就说明"你手里这个标签页是旧的"，自动刷一次。
 // 不加这个的话，我改了行为你却还在跑旧 JS，看起来就像"功能坏了/关不上"——今晚真的踩过。
-var BUILD="0.11.3";
+var BUILD="0.12.0";
 var $=function(s){return document.querySelector(s)};
 var main=$("#main"), nav=$("#nav");
 var buzz=function(m){try{navigator.vibrate&&navigator.vibrate(m||12)}catch(e){}};
@@ -331,6 +331,7 @@ function render(){
   main.appendChild(castSection());  nav.appendChild(navBtn(n++,"丢过去"));
   main.appendChild(typeSection());  nav.appendChild(navBtn(n++,"打字"));
   screenTab=n; main.appendChild(screenSection()); nav.appendChild(navBtn(n++,"屏幕"));
+  main.appendChild(djSection());     nav.appendChild(navBtn(n++,"同播"));
   main.appendChild(agentSection()); nav.appendChild(navBtn(n++,"Agent"));
   buildAgentRefs();
   buildScreenRefs();
@@ -341,7 +342,7 @@ function render(){
   var ht=hashTab();
   show(ht>=0?ht:Math.min(curTab,n-1));
 }
-var GP_SLUG=["pad","tilt","gp","cast","type","mons","agent"];   // 内置页签的固定顺序（从后往前数）
+var GP_SLUG=["pad","tilt","gp","cast","type","mons","dj","agent"];   // 内置页签的固定顺序（从后往前数）
 function hashTab(){
   var h=(location.hash||"").replace(/^#\/?/,""); if(!h) return -1;
   try{ h=decodeURIComponent(h) }catch(e){}
@@ -1572,6 +1573,99 @@ function addMsg(t,cls){
   var last=main.querySelectorAll("section").length-1;
   if(curTab!==last){unseen++;var b=$("#badge");if(b){b.textContent=unseen;b.style.display="flex"}}
 }
+
+/* ---------- 同播（手机是主，电脑跟着走） ---------- */
+// 两边各放各的、同一瞬间开始。为什么不让电脑把声音推给手机：那要采集+编码+解码一整条
+// 音频管线，而且这项目的立身之本就是"只发指令、不碰媒体"。所以这里只同步**位置**。
+// 对时也不需要两端对表：手机每次上报由服务器盖上它自己的钟，电脑那页和服务器同一台机器。
+var DJ={au:null,list:[],src:"",name:"",beat:0,gap:-99999,timer:0,off:0,rtt:60};
+function djSection(){
+  var s=el("section");
+  s.innerHTML=
+   '<div class="sect">一起放同一首歌</div>'+
+   '<div class="note">手机这一份是<b>主</b>，电脑那份自动贴上来。校正只发生在电脑侧，'+
+   '手机不用麦克风、不用装任何东西。<b>电脑那边要先开着 <code>/dj</code> 这个页面</b>（下面有按钮）。</div>'+
+   '<div id="djwhat" class="sect">没在放</div>'+
+   '<div class="grid" style="grid-template-columns:repeat(2,1fr)">'+
+     '<button id="djgo">一起开始</button><button id="djpause">暂停</button>'+
+     '<button id="djopen">打开电脑那页</button><button id="djreload">刷新歌单</button>'+
+   '</div>'+
+   '<div class="grid" style="grid-template-columns:repeat(2,1fr);margin-top:8px">'+
+     '<button id="djLate">电视声落后了 −20ms</button><button id="djEarly">电视声超前了 +20ms</button>'+
+   '</div>'+
+   '<div class="row"><span style="flex:1">电脑这份的音量</span><input type="range" id="djvol" min="0" max="1" step="0.02" value="1"><span id="djvolv">100%</span></div>'+
+   '<div id="djgap" class="sect">差 — 毫秒</div>'+
+   '<div class="sect">歌单</div><div id="djlist" class="grid" style="grid-template-columns:1fr"></div>'+
+   '<div class="note">那两颗 ±20 毫秒的按钮不是让你每次调 —— 它是<b>一次性标定</b>：'+
+   '声音从电视喇叭真正响起来要经过 HDMI、电视自己的处理、几米空气，耳机那边也有它自己的延迟，'+
+   '这一段<b>软件量不到</b>（耳机塞在耳朵里，麦克风听不见它），只能靠耳朵。'+
+   '调到听着重合了，那个值就存在电脑上（<code>djOffset</code>），以后每首都自动带着它，换耳机再点一次就行。</div>';
+  setTimeout(function(){wireDj(s)},0);
+  return s;
+}
+function wireDj(s){
+  DJ.au=DJ.au||el("audio"); DJ.au.id="djau"; DJ.au.style.display="none"; document.body.appendChild(DJ.au);
+  function j(p){ return fetch("/cmd?t="+encodeURIComponent(T)+"&c="+p,{cache:"no-store"}).then(function(r){return r.json()}) }
+  function djList(){
+    j("tracks").then(function(a){
+      var box=$("#djlist"); if(!box) return; box.innerHTML="";
+      DJ.list=a||[];
+      if(!DJ.list.length){ box.innerHTML='<div class="note">电脑还没告诉我歌在哪 —— 在 bedremote.json 里加 '+
+        '<code>"musicDirs": ["D:\\\\音乐"]</code>，或用「改按钮」那页填。</div>'; return }
+      DJ.list.forEach(function(t){
+        var b=el("button",DJ.src===t.u?"on":"",t.n);
+        b.onclick=function(){ buzz(); DJ.src=t.u; DJ.name=t.n;
+          Array.prototype.forEach.call(box.children,function(c,i){ c.classList.toggle("on",i===Array.prototype.indexOf.call(box.children,b)) });
+          djLoad() };
+        box.appendChild(b);
+      });
+    },function(){ });
+  }
+  function djLoad(){ if(!DJ.src||!DJ.au) return; if(DJ.au.getAttribute("data-u")!==DJ.src){ DJ.au.src=DJ.src+(DJ.src.indexOf("?")<0?"?":"&")+"t="+encodeURIComponent(T); DJ.au.setAttribute("data-u",DJ.src) }
+    var w=$("#djwhat"); if(w) w.textContent="在放："+DJ.name }
+  function beat(){
+    if(!DJ.au||!DJ.src) return;
+    // 报出去的瞬间手机在 X 秒，可服务器收到时手机已经走到 X + 单程延迟 了。
+    // 不减掉这一半，电脑就会永远"慢一个网络延迟"跟着（实测 localhost 上约 50ms，WiFi 上几十毫秒）。
+    // 用上一次上报的往返时间当尺子 —— 不需要两端对表。
+    var ahead=DJ.rtt/2000;
+    var p=(DJ.au.currentTime+ahead).toFixed(3), pl=(!DJ.au.paused&&!DJ.au.ended)?"1":"0";
+    var t0=Date.now();
+    fetch("/cmd?t="+encodeURIComponent(T)+"&c=djbeat&pos="+p+"&play="+pl+"&u="+encodeURIComponent(DJ.src)+"&n="+encodeURIComponent(DJ.name),{cache:"no-store"})
+      .then(function(){ DJ.rtt=Date.now()-t0 })
+      .catch(function(){});
+  }
+  function gap(){
+    j("djgap").then(function(d){
+      DJ.gap=d.gap; var e=$("#djgap"); if(!e) return;
+      if(d.gap===-99999){ e.textContent="差 — 毫秒（电脑那页没开，或者两边还没同时播）"; return }
+      DJ.off=d.off;
+      e.textContent="电脑比手机 "+(d.gap>=0?"快 ":"慢 ")+Math.abs(d.gap)+" 毫秒 ｜ 标定值 "+d.off+"ms";
+    },function(){});
+  }
+  function nudge(ms){
+    DJ.off+=ms;
+    fetch("/cmd?t="+encodeURIComponent(T)+"&c=djoff&ms="+DJ.off,{cache:"no-store"});
+    buzz();
+  }
+  $("#djgo").onclick=function(){ buzz(); djLoad(); if(!DJ.src){ djMsg("先点一首"); return }
+    DJ.au.play().catch(function(){ djMsg("手机不让自动播，再点一次「一起开始」") });
+    if(!DJ.timer) DJ.timer=setInterval(function(){ beat(); gap() },250); };
+  $("#djpause").onclick=function(){ buzz(); if(DJ.au){ DJ.au.paused?DJ.au.play():DJ.au.pause() } beat() };
+  $("#djopen").onclick=function(){ buzz();
+    var u=location.protocol+"//"+location.hostname+":"+location.port+"/dj"+(T?"?t="+encodeURIComponent(T):"");
+    fetch("/cmd?t="+encodeURIComponent(T)+"&c=open&u="+encodeURIComponent(u),{cache:"no-store"});
+    djMsg("电脑浏览器应该已经打开那页了") };
+  $("#djreload").onclick=function(){ buzz(); djList() };
+  $("#djLate").onclick=function(){ nudge(-20) };
+  $("#djEarly").onclick=function(){ nudge(20) };
+  var vv=$("#djvol"), vl=$("#djvolv");
+  if(vv) vv.oninput=function(){ if(vl) vl.textContent=Math.round(vv.value*100)+"%";
+    fetch("/cmd?t="+encodeURIComponent(T)+"&c=djvol&v="+vv.value,{cache:"no-store"}) };
+  j("djstate").then(function(d){ if(typeof d.off==="number") DJ.off=d.off });
+  djList();
+}
+function djMsg(t){ var e=$("#djwhat"); if(e) e.textContent=t }
 
 /* ---------- 其它 ---------- */
 var awake=true;

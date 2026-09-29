@@ -15,6 +15,7 @@ $cscArgs = @(
   (Join-Path $root 'src\Gui.cs'),
   (Join-Path $root 'src\Tls.cs'),
   (Join-Path $root 'src\Passes.cs'),
+  (Join-Path $root 'src\Audio.cs'),
   (Join-Path $root 'src\Apps.cs'),
   (Join-Path $root 'src\Wizard.cs'),
   (Join-Path $root 'src\Mates.cs'),

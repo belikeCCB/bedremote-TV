@@ -287,6 +287,10 @@ static class Config
     // 屏名按 uid 存（设备路径里那个稳定号），换接口/换分辨率不会张冠李戴。
     public static string Name = "";
     public static Dictionary<string, string> ScreenNames = new Dictionary<string, string>();
+    // 「两边一起放同一首歌」用得到：能从 /media 发出去的目录，和那次耳朵标定的固定偏移（毫秒）。
+    // 偏移**可以为负**（耳机比电视慢就填正、快就填负），所以它不能走 SetNum —— SetNum 把负数当"删掉这一项"。
+    public static List<string> MusicDirs = new List<string>();
+    public static int DjOffset = 0;
 
     public static string NameOrMachine()
     {
@@ -392,6 +396,15 @@ static class Config
                     if (nm.Length > 0 && !ElevatedRun.Contains(nm)) ElevatedRun.Add(nm);
                 }
             Panels = Json.Obj(Json.Get(root, "panels"));
+            // 配置里没写 panels（或者写了个空的）**不等于"手机上一个按钮都不要"** ——
+            // 那样手改配置的人打开页面会看到「遥控」整页消失，只会以为程序坏了。
+            // 缺就回内置那套；真想清空，去 /edit 里删，那里有明确语义。
+            object tabs0 = Json.Get(Panels, "tabs");
+            if (tabs0 == null || Json.Arr(tabs0).Count == 0)
+            {
+                var defRoot = Json.Obj(Json.Parse(DefaultJson));
+                Panels = Json.Obj(Json.Get(defRoot, "panels"));
+            }
             Gamepad = Json.Obj(Json.Get(root, "gamepad"));
             Name = Json.Str(Json.Get(root, "name"), "").Trim();
             ScreenNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -402,6 +415,18 @@ static class Config
                     string nm = Json.Str(kv.Value, "").Trim();
                     if (kv.Key.Length > 0 && nm.Length > 0) ScreenNames[kv.Key] = nm.Length > 40 ? nm.Substring(0, 40) : nm;
                 }
+            // 同播：允许被 /media 发出去的歌放在哪些目录 + 那次标定的固定偏移
+            MusicDirs = new List<string>();
+            object md = Json.Get(root, "musicDirs");
+            if (md != null)
+                foreach (var o in Json.Arr(md))
+                {
+                    string d = Json.Str(o, "").Trim();
+                    if (d.Length > 0 && !MusicDirs.Contains(d)) MusicDirs.Add(d);
+                }
+            DjOffset = (int)Json.Num(Json.Get(root, "djOffset"), 0);
+            if (DjOffset < -2000) DjOffset = -2000;
+            if (DjOffset > 2000) DjOffset = 2000;
             Loaded = true;
         }
         catch (Exception ex)
@@ -631,7 +656,30 @@ static class Config
                 ElevatedRun = new List<string>();
                 for (int i = 0; i < arr.Count; i++) ElevatedRun.Add((string)arr[i]);
             }
+            if (key == "musicDirs")
+            {
+                MusicDirs = new List<string>();
+                for (int i = 0; i < arr.Count; i++) MusicDirs.Add((string)arr[i]);
+            }
             System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex) { err = ex.Message; return false; }
+    }
+
+    // 同播的标定偏移：毫秒，可正可负，所以单独一个 setter（SetNum 把负数解释成"删掉这一项"）
+    public static bool SetDjOffset(int ms, out string err)
+    {
+        err = null;
+        if (ms < -2000) ms = -2000;
+        if (ms > 2000) ms = 2000;
+        try
+        {
+            string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
+            var root = Json.Obj(Json.Parse(text));
+            root["djOffset"] = ms;
+            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            DjOffset = ms;
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }

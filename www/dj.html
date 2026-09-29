@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>bedremote · 跟着手机放</title>
+<style>
+:root{--bg:#0d0d11;--fg:#e8e8ee;--dim:#8b8b96;--line:#24242c;--acc:#4da3ff;--ok:#3ddc84;--warn:#ffb64d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,"Microsoft YaHei",sans-serif;padding:18px}
+h1{font-size:17px;margin:0 0 4px}
+.sub{color:var(--dim);font-size:13px;margin-bottom:14px}
+#big{font-size:46px;font-weight:800;letter-spacing:-1px;font-variant-numeric:tabular-nums}
+#big small{font-size:16px;font-weight:400;color:var(--dim)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
+.card{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:#131318}
+label{color:var(--dim);font-size:12px}
+input[type=range]{width:180px;accent-color:var(--acc)}
+#what{word-break:break-all}
+#log{color:var(--dim);font-size:12px;margin-top:12px;white-space:pre-wrap}
+.b{border:1px solid var(--line);background:#1b1b22;color:var(--fg);border-radius:10px;padding:8px 12px;font-size:13px}
+.on{border-color:var(--acc);color:#fff;background:#1c2a3a}
+</style>
+</head>
+<body>
+<h1>跟着手机放同一首歌</h1>
+<div class="sub">这台电脑是<b>从</b>：手机报它播到第几秒，这里就跟着走。校正只发生在这边，手机什么都不用算。</div>
+
+<div class="card">
+  <div id="big">等手机 <small>开始播之后这里就有数</small></div>
+  <div class="row"><label>在放</label><span id="what">—</span></div>
+  <div class="row"><label>这份的音量</label><input type="range" id="vol" min="0" max="1" step="0.02" value="1"><span id="volv">100%</span></div>
+  <div class="row"><button class="b on" id="follow">跟着走</button><span class="sub" id="st">未开始</span></div>
+</div>
+
+<audio id="au" preload="auto"></audio>
+<div id="log"></div>
+<div class="sub" style="margin-top:14px">
+  这个页面只管"把电脑这一份贴上去"。它<b>测不到</b>声音从电视喇叭真正响起来是几时 ——
+  那一段（HDMI→电视处理→空气）只有耳朵知道，所以在手机上点那一下"现在重合了"来标定，
+  标出来的常数存在电脑配置里（<code>djOffset</code>），以后每首都自动带着它。
+</div>
+<script>
+(function(){
+var au=document.getElementById('au'), big=document.getElementById('big'), what=document.getElementById('what'),
+    st=document.getElementById('st'), log=document.getElementById('log'), vol=document.getElementById('vol'),
+    volv=document.getElementById('volv'), follow=document.getElementById('follow');
+var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
+var base='/cmd?t='+encodeURIComponent(T)+'&c=';
+var following=true, target=-1, targetAt=0, playing=false, cur='', lastErr=0, seekLock=0, volSetByUser=false;
+function say(t){ log.textContent=t+"\n"+log.textContent; if(log.textContent.length>2000) log.textContent=log.textContent.slice(0,2000) }
+function j(u){ return fetch(base+u,{cache:'no-store'}).then(function(r){return r.json()}) }
+
+follow.onclick=function(){ following=!following; follow.classList.toggle('on',following); follow.textContent=following?'跟着走':'先不听手机'; if(!following){au.pause()} };
+vol.oninput=function(){ volSetByUser=true; volv.textContent=Math.round(vol.value*100)+'%'; au.volume=+vol.value };
+
+function tick(){
+  j('djstate').then(function(d){
+    if(typeof d.target!=='number'){ return }
+    // 服务器给的位置是"它收到手机那一拍"的时刻算的；这一页和服务器同一台机器，
+    // 所以本地时间往前推就行，不需要两端对表。
+    target=d.target; targetAt=performance.now(); playing=d.play; src=d.src||'';
+    if(typeof d.vol==='number'&&!volSetByUser){ vol.value=d.vol; volv.textContent=Math.round(d.vol*100)+'%'; au.volume=d.vol }
+    if(target<0){ st.textContent='手机没在播'; big.innerHTML='等手机 <small>开始播之后这里就有数</small>'; au.pause(); return }
+    // src 就是 /media?f=… 这个 URL —— 手机播的是同一个 URL，所以"同一份内容"不用靠运气
+    if(cur!==d.src){ cur=d.src; what.textContent=d.title||d.src;
+      au.src=d.src+(d.src.indexOf('?')<0?'?':'&')+'t='+encodeURIComponent(T); au.load() }
+    if(!following){ st.textContent='已解耦'; return }
+    if(playing){ au.play().catch(function(){}) } else { au.pause() }
+    var now=target+(performance.now()-targetAt)/1000;
+    var err=au.currentTime-now;                 // 正=电脑快了，负=电脑慢了
+    lastErr=err;
+    big.innerHTML=(Math.abs(err*1000)<9999?Math.round(err*1000):0)+' <small>毫秒（电脑比手机' + (err>=0?'快':'慢') + '）</small>';
+    // 还没缓冲到目标点就别硬跳：跳过去只会拿到一段静音，看起来像"卡了一下"
+    var have=false; try{ have=au.buffered.length>0 && au.buffered.start(au.buffered.length-1)<=au.currentTime && au.currentTime<=au.buffered.end(au.buffered.length-1) }catch(e){}
+    if(au.readyState<3||!have){ st.textContent='还在缓冲，先等手机'; au.playbackRate=1; return }
+    var a=Math.abs(err);
+    if(a>0.15 && performance.now()>seekLock){     // 差这么多：一定是刚开页、或有一台卡过 —— 硬跳一次最快
+      try{ au.currentTime=Math.max(0,now) }catch(e){}
+      au.playbackRate=1; seekLock=performance.now()+900; st.textContent='硬对齐了一次';
+    } else if(a>0.02){                           // 比例追：差得越多追得越用力，但最多 4%，人耳听不出速度差
+      var k=Math.max(-0.04,Math.min(0.04,err*0.35));
+      au.playbackRate=1-k; st.textContent=k>0?'稍微放慢追手机':'稍微加快追手机';
+    } else { au.playbackRate=1; st.textContent='贴住了（'+Math.round(err*1000)+'ms）' }
+    j('djpc&pos='+au.currentTime.toFixed(3)+'&rate='+au.playbackRate.toFixed(3));  // 报回去给手机显示（带上倍速，不然外推会算错）
+  }).catch(function(){ st.textContent='连不上电脑服务' });
+}
+setInterval(tick,200); tick();
+say('页面开着就是准备跟着走。手机上点「一起开始」就会响。');
+})();
+</script>
+</body>
+</html>
