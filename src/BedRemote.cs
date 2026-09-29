@@ -2175,7 +2175,7 @@ static class Program
                 case "djbeat":
                     // 手机每 250ms 报一次"我在这首歌的第几秒"。服务器当场盖上自己的钟，
                     // 电脑播放页和服务器同一台机器、同一个钟 —— 所以不需要两端对表。
-                    Dj.Beat(G(r, "pos", ""), G(r, "play", "0"), G(r, "u", ""), G(r, "n", ""));
+                    Dj.Beat(G(r, "pos", ""), G(r, "play", "0"), G(r, "u", ""), G(r, "n", ""), G(r, "live", "0"));
                     ack = "ok";
                     break;
                 case "djvol":

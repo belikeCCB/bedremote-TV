@@ -47,9 +47,32 @@ var au=document.getElementById('au'), big=document.getElementById('big'), what=d
     volv=document.getElementById('volv'), follow=document.getElementById('follow');
 var T=(location.search.match(/[?&]t=([^&]+)/)||[])[1]||"";
 var base='/cmd?t='+encodeURIComponent(T)+'&c=';
-var following=true, target=-1, targetAt=0, playing=false, cur='', lastErr=0, seekLock=0, volSetByUser=false;
+var following=true, target=-1, targetAt=0, playing=false, cur='', lastErr=0, seekLock=0, volSetByUser=false, stuckSince=0, hls=null, hlsLoading=false, hlsWait=[];
 function say(t){ log.textContent=t+"\n"+log.textContent; if(log.textContent.length>2000) log.textContent=log.textContent.slice(0,2000) }
 function j(u){ return fetch(base+u,{cache:'no-store'}).then(function(r){return r.json()}) }
+// .m3u8 要 hls.js（Chrome 的 <audio> 不认 HLS）；只在真遇到 m3u8 时才去下载它
+function loadHls(cb){
+  if(window.Hls) return cb(true);
+  if(hlsLoading){ hlsWait.push(cb); return }
+  hlsLoading=true;
+  var sc=document.createElement('script'); sc.src='/vendor/hls.min.js';
+  sc.onload=function(){ hlsLoading=false; cb(!!window.Hls); var q=hlsWait; hlsWait=[]; q.forEach(function(f){f(!!window.Hls)}) };
+  sc.onerror=function(){ hlsLoading=false; say('hls.js 没加载上，m3u8 播不了'); var q=hlsWait; hlsWait=[]; q.forEach(function(f){f(false)}); cb(false) };
+  document.head.appendChild(sc);
+}
+function attach(u){
+  if(!/\.m3u8(\?|$)/i.test(u)){
+    if(hls){ try{hls.destroy()}catch(e){} hls=null }
+    au.src=u; return
+  }
+  loadHls(function(ok){
+    if(!ok||!window.Hls||!window.Hls.isSupported()){ au.src=u; return }
+    if(hls){ try{hls.destroy()}catch(e){} }
+    hls=new window.Hls({enableWorker:true});
+    hls.on(window.Hls.Events.ERROR,function(ev,d){ if(d&&d.fatal) say('HLS 出错：'+(d.details||d.type)) });
+    hls.loadSource(u); hls.attachMedia(au);
+  });
+}
 
 follow.onclick=function(){ following=!following; follow.classList.toggle('on',following); follow.textContent=following?'跟着走':'先不听手机'; if(!following){au.pause()} };
 vol.oninput=function(){ volSetByUser=true; volv.textContent=Math.round(vol.value*100)+'%'; au.volume=+vol.value };
@@ -57,6 +80,9 @@ vol.oninput=function(){ volSetByUser=true; volv.textContent=Math.round(vol.value
 function tick(){
   j('djstate').then(function(d){
     if(typeof d.target!=='number'){ return }
+    // 先把自己在哪报出去，再做任何判断 —— 之前这几个 return 排在上报后面，
+    // 结果"还在缓冲"的那段时间里手机完全看不到电脑活着，以为那页没开。
+    try{ j('djpc&pos='+au.currentTime.toFixed(3)+'&rate='+au.playbackRate.toFixed(3)) }catch(e){}
     // 服务器给的位置是"它收到手机那一拍"的时刻算的；这一页和服务器同一台机器，
     // 所以本地时间往前推就行，不需要两端对表。
     target=d.target; targetAt=performance.now(); playing=d.play; src=d.src||'';
@@ -65,16 +91,33 @@ function tick(){
     // src 可能是外部直链（电台、播客、平台的音频地址），也可能是本机 /media?f=… ——
     // 只有后者要带令牌，往前者身上拼 ?t= 会把人家的地址弄坏
     if(cur!==d.src){ cur=d.src; what.textContent=d.title||d.src;
-      au.src=/^https?:/i.test(d.src) ? d.src : d.src+(d.src.indexOf('?')<0?'?':'&')+'t='+encodeURIComponent(T); au.load() }
+      attach(/^https?:/i.test(d.src) ? d.src : d.src+(d.src.indexOf('?')<0?'?':'&')+'t='+encodeURIComponent(T)) }
     if(!following){ st.textContent='已解耦'; return }
     if(playing){ au.play().catch(function(){}) } else { au.pause() }
+    if(d.live){                                  // 直播：不比位置，两边同时开播就够了
+      au.playbackRate=1; st.textContent='直播：只做同时播/同时停';
+      big.innerHTML='直播 <small>不比第几秒，两边同时响就行</small>';
+      return }
     var now=target+(performance.now()-targetAt)/1000;
     var err=au.currentTime-now;                 // 正=电脑快了，负=电脑慢了
     lastErr=err;
     big.innerHTML=(Math.abs(err*1000)<9999?Math.round(err*1000):0)+' <small>毫秒（电脑比手机' + (err>=0?'快':'慢') + '）</small>';
     // 还没缓冲到目标点就别硬跳：跳过去只会拿到一段静音，看起来像"卡了一下"
     var have=false; try{ have=au.buffered.length>0 && au.buffered.start(au.buffered.length-1)<=au.currentTime && au.currentTime<=au.buffered.end(au.buffered.length-1) }catch(e){}
-    if(au.readyState<3||!have){ st.textContent='还在缓冲，先等手机'; au.playbackRate=1; return }
+    if(au.readyState<3||!have){
+      // 缓冲不够就先别硬跳 —— 但"等它自己好"会死锁：hls.js 是跟着播放位置往前取分片的，
+      // 播放位置不动它就不取新的，越等越没数据。实测真能卡住十秒（差值每秒涨一秒）。
+      // 所以卡满 2 秒就主动要求重新拉流 + 硬跳到目标位置。
+      if(!stuckSince) stuckSince=performance.now();
+      else if(performance.now()-stuckSince>2000){
+        st.textContent='卡住了：重新拉流并硬跳';
+        try{ if(hls) hls.startLoad() }catch(e){}
+        try{ au.currentTime=Math.max(0,now) }catch(e){}
+        seekLock=performance.now()+900; stuckSince=0;
+      } else { st.textContent='还在缓冲，先等手机' }
+      au.playbackRate=1; return
+    }
+    stuckSince=0;
     var a=Math.abs(err);
     if(a>0.15 && performance.now()>seekLock){     // 差这么多：一定是刚开页、或有一台卡过 —— 硬跳一次最快
       try{ au.currentTime=Math.max(0,now) }catch(e){}
@@ -83,7 +126,7 @@ function tick(){
       var k=Math.max(-0.04,Math.min(0.04,err*0.35));
       au.playbackRate=1-k; st.textContent=k>0?'稍微放慢追手机':'稍微加快追手机';
     } else { au.playbackRate=1; st.textContent='贴住了（'+Math.round(err*1000)+'ms）' }
-    j('djpc&pos='+au.currentTime.toFixed(3)+'&rate='+au.playbackRate.toFixed(3));  // 报回去给手机显示（带上倍速，不然外推会算错）
+    // （位置已经在这一轮开头报过了）
   }).catch(function(){ st.textContent='连不上电脑服务' });
 }
 setInterval(tick,200); tick();

@@ -1578,7 +1578,7 @@ function addMsg(t,cls){
 // 两边各放各的、同一瞬间开始。为什么不让电脑把声音推给手机：那要采集+编码+解码一整条
 // 音频管线，而且这项目的立身之本就是"只发指令、不碰媒体"。所以这里只同步**位置**。
 // 对时也不需要两端对表：手机每次上报由服务器盖上它自己的钟，电脑那页和服务器同一台机器。
-var DJ={au:null,list:[],src:"",name:"",beat:0,gap:-99999,timer:0,off:0,rtt:60};
+var DJ={au:null,list:[],src:"",name:"",beat:0,gap:-99999,timer:0,off:0,rtt:60,hls:null,hlsLoading:false,hlsWait:[]};
 function djSection(){
   var s=el("section");
   s.innerHTML=
@@ -1645,8 +1645,34 @@ function wireDj(s){
       });
     },function(){ });
   }
+  function djLive(){ return !isFinite(DJ.au.duration) || DJ.au.duration > 360000 }
+  // 挂地址：.m3u8 要 hls.js（桌面/安卓 Chrome 的 <audio> 不认 HLS，只有 Safari 原生支持），
+  // 而且**只有真的用到才去下载那 400KB** —— 普通 mp3/aac 链接一个字节都不多花。
+  function djAttach(u){
+    var au=DJ.au;
+    if(!/\.m3u8(\?|$)/i.test(u)){
+      if(DJ.hls){ try{ DJ.hls.destroy() }catch(e){} DJ.hls=null }
+      au.src=u; return
+    }
+    djHls(function(ok){
+      if(!ok || !window.Hls || !window.Hls.isSupported()){ au.src=u; return }   // Safari 那类原生支持的，直接给 src
+      if(DJ.hls){ try{ DJ.hls.destroy() }catch(e){} }
+      var h=new window.Hls({enableWorker:true});
+      h.on(window.Hls.Events.ERROR,function(ev,d){ if(d&&d.fatal) djMsg("HLS 出错了："+(d.details||d.type)) });
+      h.loadSource(u); h.attachMedia(au); DJ.hls=h;
+    });
+  }
+  function djHls(cb){
+    if(window.Hls) return cb(true);
+    if(DJ.hlsLoading){ DJ.hlsWait.push(cb); return }
+    DJ.hlsLoading=true;
+    var sc=document.createElement("script"); sc.src="/vendor/hls.min.js";
+    sc.onload=function(){ DJ.hlsLoading=false; cb(!!window.Hls); var q=DJ.hlsWait; DJ.hlsWait=[]; q.forEach(function(f){ f(!!window.Hls) }) };
+    sc.onerror=function(){ DJ.hlsLoading=false; djMsg("hls.js 没加载上（/vendor/hls.min.js）"); var q=DJ.hlsWait; DJ.hlsWait=[]; q.forEach(function(f){ f(false) }); cb(false) };
+    document.head.appendChild(sc);
+  }
   function djUrl(u){ return /^https?:/i.test(u) ? u : u+(u.indexOf("?")<0?"?":"&")+"t="+encodeURIComponent(T) }
-  function djLoad(){ if(!DJ.src||!DJ.au) return; if(DJ.au.getAttribute("data-u")!==DJ.src){ DJ.au.src=djUrl(DJ.src); DJ.au.setAttribute("data-u",DJ.src) }
+  function djLoad(){ if(!DJ.src||!DJ.au) return; if(DJ.au.getAttribute("data-u")!==DJ.src){ DJ.au.removeAttribute("data-u"); DJ.au.setAttribute("data-u",DJ.src); djAttach(djUrl(DJ.src)) }
     var w=$("#djwhat"); if(w) w.textContent="在放："+DJ.name }
   function beat(){
     if(!DJ.au||!DJ.src) return;
@@ -1654,9 +1680,11 @@ function wireDj(s){
     // 不减掉这一半，电脑就会永远"慢一个网络延迟"跟着（实测 localhost 上约 50ms，WiFi 上几十毫秒）。
     // 用上一次上报的往返时间当尺子 —— 不需要两端对表。
     var ahead=DJ.rtt/2000;
-    var p=(DJ.au.currentTime+ahead).toFixed(3), pl=(!DJ.au.paused&&!DJ.au.ended)?"1":"0";
+    var live=djLive()?1:0;
+    // 直播流没有可比的"第几秒"（两边各挂在时间轴尾巴上），报 0 让电脑那边只做"一起播/一起停"
+    var p=live?"0":(DJ.au.currentTime+ahead).toFixed(3), pl=(!DJ.au.paused&&!DJ.au.ended)?"1":"0";
     var t0=Date.now();
-    fetch("/cmd?t="+encodeURIComponent(T)+"&c=djbeat&pos="+p+"&play="+pl+"&u="+encodeURIComponent(DJ.src)+"&n="+encodeURIComponent(DJ.name),{cache:"no-store"})
+    fetch("/cmd?t="+encodeURIComponent(T)+"&c=djbeat&pos="+p+"&play="+pl+"&live="+live+"&u="+encodeURIComponent(DJ.src)+"&n="+encodeURIComponent(DJ.name),{cache:"no-store"})
       .then(function(){ DJ.rtt=Date.now()-t0 })
       .catch(function(){});
   }
@@ -1664,6 +1692,7 @@ function wireDj(s){
     j("djgap").then(function(d){
       DJ.gap=d.gap; var e=$("#djgap"); if(!e) return;
       if(d.gap===-99999){ e.textContent="差 — 毫秒（电脑那页没开，或者两边还没同时播）"; return }
+      if(d.live){ e.textContent="直播流：两边同时开播就行，不比位置"; return }
       DJ.off=d.off;
       e.textContent="电脑比手机 "+(d.gap>=0?"快 ":"慢 ")+Math.abs(d.gap)+" 毫秒 ｜ 标定值 "+d.off+"ms";
     },function(){});

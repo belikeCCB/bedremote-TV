@@ -38,6 +38,9 @@ static class Dj
     static public string Src = "";
     static public string Title = "";        // 只给人看的名字（列表里那一条）
     static public bool Playing = false;
+    // 直播流（电台的 HLS 常常是 live）没有可比的"第几秒"：两边各挂在直播时间轴的尾巴上，
+    // 拿位置去追只会越追越歪。所以直播只做"一起播 / 一起停"，不做位置校正。
+    static public bool Live = false;
     static public double Vol = 1.0;         // 电脑这一份的音量（压低电视、把主声交给耳机，靠它）
     static public long BeatN = 0;           // 收到过多少次上报（掉线检测用）
 
@@ -68,18 +71,19 @@ static class Dj
     // 电脑该跟着走到的目标位置 = 手机现在的位置 + 标定偏移
     static public double Target()
     {
+        lock (Lk) { if (Live) return -1; }          // 直播：没有"该跟到第几秒"这回事
         double p = PhoneNow();
         if (p < 0) return -1;
         return Math.Max(0, p + Offset / 1000.0);
     }
 
-    static public void Beat(string pos, string playing, string src, string title)
+    static public void Beat(string pos, string playing, string src, string title, string live)
     {
         double p;
         if (!double.TryParse(pos, NumberStyles.Float, CultureInfo.InvariantCulture, out p) || p < 0) return;
         lock (Lk)
         {
-            Pos = p; Stamp = Now; Playing = (playing == "1");
+            Pos = p; Stamp = Now; Playing = (playing == "1"); Live = (live == "1");
             if (!string.IsNullOrEmpty(src)) Src = src;
             if (!string.IsNullOrEmpty(title)) Title = title;
             BeatN++;
@@ -112,11 +116,12 @@ static class Dj
     static public string StateJson()
     {
         double t = Target();
-        bool play; string src, title; double vol;
-        lock (Lk) { play = Playing; src = Src; title = Title; vol = Vol; }
+        bool play; string src, title; double vol; bool live;
+        lock (Lk) { play = Playing; src = Src; title = Title; vol = Vol; live = Live; }
         var sb = new StringBuilder();
         sb.Append("{\"target\":").Append(t < 0 ? "-1" : t.ToString("0.000", CultureInfo.InvariantCulture));
         sb.Append(",\"play\":").Append(play ? "true" : "false");
+        sb.Append(",\"live\":").Append(live ? "true" : "false");
         sb.Append(",\"off\":").Append(Offset);
         sb.Append(",\"vol\":").Append(vol.ToString("0.00", CultureInfo.InvariantCulture));
         sb.Append(",\"src\":\"").Append(Program.Json(src)).Append("\"");
@@ -134,7 +139,9 @@ static class Dj
     static public string GapJson()
     {
         double ph = PhoneNow(), pc = -1;
-        lock (Lk) { if (PcPos >= 0 && Now - PcStamp < 3000) pc = PcPos + (Now - PcStamp) / 1000.0 * PcRate; }
+        bool live;
+        lock (Lk) { live = Live; if (PcPos >= 0 && Now - PcStamp < 3000) pc = PcPos + (Now - PcStamp) / 1000.0 * PcRate; }
+        if (live) return "{\"gap\":0,\"live\":true}";      // 直播不比位置，手机上显示"两边都在播"就够了
         if (ph < 0 || pc < 0) return "{\"gap\":-99999}";
         int gapMs = (int)Math.Round((pc - Offset / 1000.0 - ph) * 1000.0);
         return "{\"gap\":" + gapMs + ",\"phone\":" + ph.ToString("0.00", CultureInfo.InvariantCulture) +
