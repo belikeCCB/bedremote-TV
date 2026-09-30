@@ -30,11 +30,24 @@ Write-Host $out
 
 if ($code -ne 0) {
   $leaf = Split-Path -Leaf $Script
-  $bad = @($out -split "`n" | Where-Object { $_ -match 'FAIL|ERROR|Exception|Cannot|not found' })
-  if ($bad.Count -eq 0) { $bad = @($out -split "`n" | Select-Object -Last 6) }
-  foreach ($b in $bad) {
-    $t = ($b -replace '^\s+', '').Trim()
-    if ($t.Length -gt 0) { Write-Host ('::error::' + $leaf + ': ' + $t) }
+  $lines = @($out -split "`n")
+  $hits = 0
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -match 'FAIL|ERROR|Exception|Cannot|not found') {
+      $t = $lines[$i].Trim()
+      # These harnesses print the offending value on the line right below a FAIL. "Which check"
+      # without "what it actually got" is only half the answer, and the log is not readable
+      # without a login - so carry the detail along in the same annotation.
+      if (($i + 1) -lt $lines.Count -and $lines[$i + 1] -match '^\s{6,}\S') { $t += '  << ' + $lines[$i + 1].Trim() }
+      Write-Host ('::error::' + $leaf + ': ' + $t)
+      $hits++
+    }
+  }
+  if ($hits -eq 0) {
+    foreach ($b in @($lines | Select-Object -Last 6)) {
+      $t = $b.Trim()
+      if ($t.Length -gt 0) { Write-Host ('::error::' + $leaf + ': ' + $t) }
+    }
   }
   if ($env:GITHUB_STEP_SUMMARY) {
     ('### ' + $leaf + ' failed (exit ' + $code + ')') | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY

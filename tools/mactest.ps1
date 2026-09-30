@@ -43,18 +43,45 @@ function Code($url) {
   try { return [int](Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 10).StatusCode }
   catch { if ($_.Exception.Response) { return [int]$_.Exception.Response.StatusCode }; return -1 }
 }
-function Body($url) {
-  try { return [string](Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 10).Content }
-  catch { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { return [string]$_.ErrorDetails.Message }
-          if ($_.Exception.Response) { try { $sr = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream()); $t = $sr.ReadToEnd(); $sr.Close(); return [string]$t } catch { return '' } }
-          return '' }
+# A tiny HTTP client over a raw socket, used instead of Invoke-WebRequest for anything that has to
+# READ A RESPONSE BODY OF A FAILED REQUEST.
+# Why: CI runs `shell: pwsh`, which on the Windows runner is PowerShell 7. On 7.x the error record
+# thrown for a 4xx carries an HttpResponseMessage, and that type has NO GetResponseStream() - so the
+# 5.1-style fallback used here returns an empty string there. Every assertion about what a *refused*
+# save answers then silently fails ("pass=40 fail=3" on the first real CI run), while the same
+# script is green on 5.1. Talking the protocol ourselves makes the test identical on 5.1, 7.x,
+# and any machine - which is the whole point of a regression harness.
+function Http($method, $url, $body) {
+  $u = [Uri]$url
+  $c = New-Object System.Net.Sockets.TcpClient
+  $c.Connect($u.Host, $u.Port)
+  $st = $c.GetStream()
+  $req = $method + ' ' + $u.PathAndQuery + ' HTTP/1.1' + "`r`n" + 'Host: ' + $u.Host + ':' + $u.Port + "`r`n"
+  if ($null -ne $body) {
+    $req += 'Content-Type: application/x-www-form-urlencoded' + "`r`n"
+    $req += 'Content-Length: ' + ([Text.Encoding]::UTF8.GetByteCount($body)) + "`r`n"
+  }
+  $req += 'Connection: close' + "`r`n`r`n"
+  $b = [Text.Encoding]::ASCII.GetBytes($req)
+  $st.Write($b, 0, $b.Length)
+  if ($null -ne $body -and $body.Length -gt 0) {
+    $bb = [Text.Encoding]::UTF8.GetBytes($body); $st.Write($bb, 0, $bb.Length)
+  }
+  $st.Flush()
+  $txt = ''; $buf = New-Object byte[] 32768
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ($sw.ElapsedMilliseconds -lt 15000) {
+    try { $n = $st.Read($buf, 0, $buf.Length) } catch { break }
+    if ($n -le 0) { break }
+    $txt += [Text.Encoding]::UTF8.GetString($buf, 0, $n)
+  }
+  try { $c.Close() } catch { }
+  $i = $txt.IndexOf("`r`n`r`n")          # body only: some callers compare the whole string with -eq 'ok'
+  if ($i -ge 0) { return $txt.Substring($i + 4) }
+  return $txt
 }
-function Post($url, $form) {
-  try { return [string](Invoke-WebRequest -UseBasicParsing -Uri $url -Method Post -Body $form -TimeoutSec 10).Content }
-  catch { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { return [string]$_.ErrorDetails.Message }
-          if ($_.Exception.Response) { try { $sr = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream()); $t = $sr.ReadToEnd(); $sr.Close(); return [string]$t } catch { return '' } }
-          return '' }
-}
+function Body($url) { return (Http 'GET' $url $null) }
+function Post($url, $form) { return (Http 'POST' $url $form) }
 # Read an SSE stream for a while. Returns the text seen. Used to prove the progress events
 # really arrive - a macro that runs silently is useless from the phone.
 function Read-Sse($stream, $ms) {
