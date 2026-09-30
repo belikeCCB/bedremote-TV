@@ -1,9 +1,13 @@
 name: build
 
-# 说明：这个 workflow 的**每一步命令都在本地 Windows + PowerShell 5.1 上单独跑通过**
-# （编译、起服务打 /health /addr /pair /vendor、CRLF 检查还配了正/负对照），
-# 但**没有在 GitHub Actions 的运行环境里跑过** —— 作者本地没有远端仓库也没装 gh。
-# 它做的事和本地 build.ps1 一致；第一次真推上去如果红了，改的应该是这里。
+# 说明：这个 workflow 的每一步命令都在本地 Windows + PowerShell 5.1 上单独跑通过
+# （编译、起服务打 /health /addr /pair /vendor、CRLF 检查还配了正/负对照）。
+#
+# **第一次真推上 GitHub 的时候它红了**（2026-10-01，`组合动作回归`那一步失败，本地同样的脚本是绿的）。
+# 问题是 Actions 的日志要登录才看得到，本地 shell 里查不到 —— 所以三个测试步骤现在都走
+# `tools\ci-run.ps1`：失败时把 FAIL/ERROR 那些行发成 **check annotations**，
+# 这样不用登录、GET /repos/<owner>/<repo>/commits/<sha>/check-runs 就能看见到底哪条检查红了。
+# 它做的事和本地 build.ps1 一致；红了先改这里，别改测试去迁就环境。
 
 on:
   push:
@@ -43,15 +47,15 @@ jobs:
 
       - name: 门禁回归（tools\secauth.ps1：自己起一个沙箱实例，端口/数据目录都是临时的）
         shell: pwsh
-        run: ./tools/secauth.ps1 -Exe ./bedremote.exe
+        run: ./tools/ci-run.ps1 -Script ./tools/secauth.ps1 -Exe ./bedremote.exe
 
       - name: 组合动作回归（tools\mactest.ps1：临时端口 + 临时数据目录，自己起一个沙箱实例）
         shell: pwsh
-        run: ./tools/mactest.ps1 -Exe ./bedremote.exe
+        run: ./tools/ci-run.ps1 -Script ./tools/mactest.ps1 -Exe ./bedremote.exe
 
       - name: 输入锁范围（tools\locktest.ps1：一条慢指令不许把触控板堵在门外，量的是延迟上限）
         shell: pwsh
-        run: ./tools/locktest.ps1 -Exe ./bedremote.exe
+        run: ./tools/ci-run.ps1 -Script ./tools/locktest.ps1 -Exe ./bedremote.exe
 
       - name: 示例配置必须还能被真的 Config.Load 读懂（cfgprobe，带正/负对照）
         shell: pwsh
