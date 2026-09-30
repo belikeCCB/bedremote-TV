@@ -163,6 +163,20 @@ try {
   Check 'the refused save left the list alone' ((Body ($B + 'c=macros')) -match 'edited')
   Check 'and left the file alone' ((Get-Content (Join-Path $work 'bedremote.json') -Raw) -notmatch '"big"')
 
+  # The bug this guards: a save whose shape is wrong (steps given as an object instead of an
+  # array) used to be accepted as "zero valid macros" - and because the save REPLACES the whole
+  # section, one malformed POST silently wiped every working macro and still answered ok:true.
+  $before = Body ($B + 'c=macros')
+  $shape = Post ('http://127.0.0.1:' + $Port + '/macros/save') ('j=' + [Uri]::EscapeDataString('{"broken":{"x":1}}'))
+  Check 'a wrong-shape save is refused' ($shape -match '"ok":false') $shape
+  Check 'wrong-shape save did NOT wipe the list' ((Body ($B + 'c=macros')) -eq $before)
+  $num = Post ('http://127.0.0.1:' + $Port + '/macros/save') ('j=' + [Uri]::EscapeDataString('{"n2":[123]}'))
+  Check 'a non-string step is refused' ($num -match '"ok":false') $num
+  Check 'and the list is still intact' ((Body ($B + 'c=macros')) -eq $before)
+  $empty = Post ('http://127.0.0.1:' + $Port + '/macros/save') ('j=' + [Uri]::EscapeDataString('{}'))
+  Check 'posting {} is the documented way to clear' ($empty -match '"ok":true') $empty
+  Check 'and it really cleared' ((Body ($B + 'c=macros')) -match '^\[\]$')
+
   # ---- auth: a macro is a command, so it obeys the token like everything else ----
   $null = Post ('http://127.0.0.1:' + $Port + '/macros/save') ('j=' + [Uri]::EscapeDataString('{"probe":["c=mons"],"edited":["c=notify&s=keep"]}' ))
   try { $sock.Close() } catch { }

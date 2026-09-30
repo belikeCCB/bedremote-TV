@@ -589,9 +589,14 @@ static class Config
                 string nm = kv.Key.Trim();
                 if (nm.Length == 0) continue;
                 if (nm.Length > 40) { err = "动作名太长了（" + nm + "，最多 40 字）"; return false; }
+                // 值必须真的是数组。不查这一条的话，一份形状错的东西（把数组写成了对象）会被当成
+                // "这个动作没有步骤"静默丢掉 —— 而整段是**替换**语义，结果就是"存了一次坏数据，
+                // 把原来能用的动作全清了"，还回一个 ok:true。清空的正确写法是传 {}。
+                if (!(kv.Value is List<object>)) { err = "「" + nm + "」的步骤必须是数组，比如 [\"c=mons\",\"wait=400\"]"; return false; }
                 var steps = new List<string>();
                 foreach (object o in Json.Arr(kv.Value))
                 {
+                    if (!(o is string)) { err = "「" + nm + "」的每一步必须是字符串"; return false; }
                     string s = Json.Str(o, "").Trim();
                     if (s.Length == 0) continue;
                     if (s.Length > 400) { err = "「" + nm + "」有一步太长（最多 400 字）"; return false; }
@@ -602,6 +607,8 @@ static class Config
                 next[nm] = steps;
             }
             if (next.Count > 40) { err = "组合动作太多（" + next.Count + " > 40）"; return false; }
+            // 传进来有东西、结果一条都不合法 = 坏数据，不是"他想清空"：原来的一个字节都不许动。
+            if (next.Count == 0 && raw.Count > 0) { err = "这份组合动作里没有一条是合法的，原来的没动"; return false; }
             string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
             var root = Json.Obj(Json.Parse(text));
             if (next.Count == 0) root.Remove("macros");
