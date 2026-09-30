@@ -49,6 +49,10 @@ jobs:
         shell: pwsh
         run: ./tools/mactest.ps1 -Exe ./bedremote.exe
 
+      - name: 输入锁范围（tools\locktest.ps1：一条慢指令不许把触控板堵在门外，量的是延迟上限）
+        shell: pwsh
+        run: ./tools/locktest.ps1 -Exe ./bedremote.exe
+
       - name: 示例配置必须还能被真的 Config.Load 读懂（cfgprobe，带正/负对照）
         shell: pwsh
         run: ./tools/cfgprobe-run.ps1

@@ -522,7 +522,7 @@ static class Program
     static string DataDir = "";
     static long Started = 0;
     static volatile bool Awake = true;
-    internal const string Version = "bedremote 0.14.1";
+    internal const string Version = "bedremote 0.14.2";
 
     static void Help()
     {
@@ -2097,6 +2097,12 @@ static class Program
 
     static readonly AutoResetEvent ReplyEvt = new AutoResetEvent(false);
     static readonly object InputLock = new object();
+    // 改显示配置那几条单独一把锁。以前它和注入共用 InputLock，于是"关显示器/切主屏"
+    // 那种要跑一两秒的动作会把触控板一起堵在门外 —— 见 Cmd 里那段的注释和实测数字。
+    // 代价也说清：这两把锁现在是**可以并发**的，所以"改拓扑的那一瞬"正好有一次鼠标移动在飞，
+    // 那一下可能落在旧拓扑的坐标上（结果就是光标偏一点，再推一帧就回来了）。
+    // 换来的是"慢动作不许卡住你正在用的指针"，这个取舍我认为值。
+    static readonly object DisplayLock = new object();
     static volatile string LastReply = "";
 
     // 推到手机上，然后等人在手机上回一句（脚本可以直接 curl 拿结果）
@@ -2123,7 +2129,28 @@ static class Program
         return false;
     }
 
+    // 真的会往系统队列里塞鼠标键盘事件的那几条 —— 只有它们需要在 InputLock 里排队。
+    // 这跟 IsInputCmd（"锁屏时不许做"的清单，里面还包括 run/open/power）不是一回事：
+    // 那份要宽，这份要窄。窄的理由见 Cmd 里那段注释和实测数字。
+    static bool TouchesInputQueue(string c)
+    {
+        switch (c)
+        {
+            case "move": case "abs": case "btn": case "wheel": case "key":
+            case "combo": case "text": case "paste": case "screen":
+            case "frame": case "release": return true;
+        }
+        return false;
+    }
+
+    // 动显示配置的那几条（包括读 DDC）：自己排一条队，别去排注入那条队。
+    static bool TouchesDisplay(string c, bool disp)
+    {
+        return disp || c == "mons" || c == "ddcdbg" || c == "power";
+    }
+
     static long LastLockedNote = 0;
+
 
     internal static bool InputAllowed()
     {
@@ -2351,8 +2378,17 @@ static class Program
                     c == "only" || c == "cyclep" || c == "cycleo" || c == "undo";
         var hzBefore = disp ? Disp.HzSnapshot() : null;
         // 触控板会连发 move，而"读当前坐标->算落点->绝对放置"必须是原子的，
-        // 否则两个请求都读到同一个起点，就丢步了。
-        lock (InputLock)
+        // 否则两个请求都读到同一个起点，就丢步了 —— 这是 InputLock 存在的唯一理由。
+        // 但**别把整张动作表都塞进这把锁里**（以前就是）：任何一条慢动作都能把你正在用的
+        // 触控板/手柄堵在后面。实测：一条 c=scan（在网段上问一圈，约 1.2 秒）在跑的时候，
+        // 一个 c=move 的耗时从 10ms 变成 1198ms —— 手机上那一下就是"明显一顿"。
+        // 现在分三档：动输入队列的排 InputLock；动显示/读 DDC 的排 DisplayLock（它们之间
+        // 仍然要串行，不能两块"只留这块屏"同时下手）；剩下的（扫描、开链接、跑程序、
+        // 推面板、扫目录…）不排队 —— 它们跟输入没有先后关系。
+        object lk = TouchesInputQueue(c) ? InputLock : (TouchesDisplay(c, disp) ? DisplayLock : null);
+        bool taken = false;
+        if (lk != null) Monitor.Enter(lk, ref taken);
+        try
         {
         try
         {
@@ -2746,6 +2782,7 @@ static class Program
             catch { }
         }
         }
+        finally { if (taken) Monitor.Exit(lk); }   // 放锁只在这一个地方；switch 里那些 return 也会走到这里
         return ack;
     }
 

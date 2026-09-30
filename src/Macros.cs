@@ -33,6 +33,11 @@ static class MacroRun
 
     const int MaxSeconds = 180;         // 整段最长三分钟（每步之间才检查，所以是"别一直占着"，不是硬闹钟）
 
+    // 单步的耐心。20 秒是很宽的数字：正常一步是毫秒级（发个键、切个屏），
+    // 慢的那些（改显示配置带 DDC 重试、救屏）实测也就几秒。
+    // 超过 20 秒没回音的，基本都是"永远不会回"的那一类。
+    const int StepSeconds = 20;
+
     // 上一步的结果，留在内存里给 /macrostatus 看。
     // 为什么要留：进度本来是走 SSE 推的，而"睡前"这种宏按完就是把手机扣下 —— 屏一锁，
     // SSE 没了，第 3 步失败就没人知道，只剩本机日志。界面上至少能回看"最后一次跑到哪、成了没"。
@@ -171,7 +176,37 @@ static class MacroRun
                     continue;
                 }
 
-                string ack = Program.RunCmd(step, by);
+                // 一步最多等 StepSeconds 秒，而且是在**另一条线程**上等。
+                // 为什么：一步可能撞进一个永远不返回的调用里（`c=open` 开了台已经关机的机器、
+                // 剪贴板被别的进程占着不放），而这段是抱着 Busy 标记跑的 —— 一个宏卡死 =
+                // 以后每个宏都被"上一个还在跑"拒掉，整个功能在界面上看着就是坏了，只能重启进程。
+                // 现在最坏变成"这一个宏停在这一步"，宏系统本身还活着。
+                // 超过期限**不再往下走**：第 2 步都没做完，第 3 步"关显示器"照做，那是更糟的结果。
+                string ack;
+                {
+                    string sq = step;
+                    string got = "";
+                    var done = new ManualResetEvent(false);
+                    // 用一条**真线程**而不是线程池：这条宏自己就是池里跑起来的，
+                    // 再往池里塞一步，池子忙的时候那一步排不上队 = 被误判成"卡住超时"。
+                    var th = new Thread(delegate ()
+                    {
+                        try { got = Program.RunCmd(sq, by); }
+                        catch (Exception ex) { got = "err:" + ex.Message; }
+                        done.Set();
+                    });
+                    th.IsBackground = true;
+                    th.Start();
+                    if (!done.WaitOne(TimeSpan.FromSeconds(StepSeconds)))
+                    {
+                        // 只有"没回音"才停整个宏；普通的 err（比如某一步的键位不对）照旧继续往下走，
+                        // 这是这个功能一开始就定下的语义（一步不成不牵连后面）。
+                        Tell(name, i + 1, steps.Count, step, "stuck");
+                        Done(name, "第 " + (i + 1) + " 步超过 " + StepSeconds + " 秒没回音，剩下的不做了（那一步可能还在后台跑着）");
+                        break;
+                    }
+                    ack = got;
+                }
                 if (ack == "locked")
                 {
                     // 锁屏/安全桌面挡下来了：后面每一步都会一样挡，没必要把日志刷满，直接收工
