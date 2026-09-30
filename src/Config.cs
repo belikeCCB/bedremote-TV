@@ -368,18 +368,63 @@ static class Config
 
     public static void Load(string exeDir)
     {
+        // 每次重载都从干净状态开始：Error/Loaded 是静态的，上一次失败会一直挂着，
+        // 那样 /status 和界面横幅会一直报一个已经不存在的问题。
+        Error = null; Loaded = false;
         Path = System.IO.Path.Combine(exeDir, "bedremote.json");
         string text;
         try
         {
             if (System.IO.File.Exists(Path)) text = System.IO.File.ReadAllText(Path);
-            else { text = DefaultJson; System.IO.File.WriteAllText(Path, DefaultJson, new UTF8Encoding(false)); }
+            else { text = DefaultJson; WriteAtomic(Path, DefaultJson); }
         }
         catch { text = DefaultJson; }
 
         try
         {
-            var root = Json.Obj(Json.Parse(text));
+            ParseRoot(Json.Obj(Json.Parse(text)));
+            Loaded = true;
+            return;
+        }
+        catch (Exception ex)
+        {
+            Error = "配置解析失败：" + ex.Message;
+        }
+
+        // 主文件读不动 —— **先试上一次成功保存时留下的 .bak**。
+        // 这一步是安全相关的：读不懂就退回内置默认，等于"口令清空、端口回 8765"，
+        // 你以为锁着的门就这么自己开了。所以能回备份就绝不退回默认，并且把坏的那份留成证据。
+        try
+        {
+            string bak = Path + ".bak";
+            if (System.IO.File.Exists(bak))
+            {
+                ParseRoot(Json.Obj(Json.Parse(System.IO.File.ReadAllText(bak, Encoding.UTF8))));
+                Loaded = true;
+                try { System.IO.File.Copy(Path, Path + ".corrupt", true); } catch { }
+                // 治主文件，但**别动 .bak**（它就是那份刚救了我们一命的备份）。
+                WriteAtomic(Path, System.IO.File.ReadAllText(bak, Encoding.UTF8), false);
+                Error += " —— 已自动改用上一次成功保存的备份（bedremote.json.bak），坏的那份留在 .corrupt 里。" +
+                         "建议看一眼 .corrupt 再决定要不要改回原来的设置（现在跑的是备份里的）。";
+                return;
+            }
+        }
+        catch (Exception ex2) { Error += "；备份也读不动：" + ex2.Message; }
+
+        // 最后一级：内置默认（老行为）。注意此时 Token 是空的 = 局域网开放，
+        // 所以界面横幅、/status 的 cfgErr、日志三处都要把这句话喊出来。
+        Error += "，已退回内置默认面板";
+        var defRoot = Json.Obj(Json.Parse(DefaultJson));
+        Panels = Json.Obj(Json.Get(defRoot, "panels"));
+        Gamepad = new Dictionary<string, object>();
+        Name = "";
+        Macros = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        ScreenNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    // 一份解析好的 JSON -> 各个静态字段。Load 里两条路（主文件 / 备份）都调它，别复制一遍。
+    static void ParseRoot(Dictionary<string, object> root)
+    {
             Port = (int)Json.Num(Json.Get(root, "port"), Port);
             Token = Json.Str(Json.Get(root, "token"), "");
             KeepAwake = Json.Bool(Json.Get(root, "keepAwake"), KeepAwake);
@@ -454,22 +499,44 @@ static class Config
                     }
                     if (steps.Count > 0 && !Macros.ContainsKey(nm)) Macros[nm] = steps;
                 }
-            Loaded = true;
-        }
-        catch (Exception ex)
-        {
-            Error = "配置解析失败，已退回内置面板：" + ex.Message;
-            var root = Json.Obj(Json.Parse(DefaultJson));
-            Panels = Json.Obj(Json.Get(root, "panels"));
-            Gamepad = new Dictionary<string, object>();
-            Name = "";
-            ScreenNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            Macros = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        }
         if (Port < 1 || Port > 65535) Port = 8765;
     }
 
     public static string Error = null;
+
+    /// <summary>
+    /// 所有落盘都走这里。**为什么非要原子**：以前是 WriteAllText 直接覆盖目标文件，
+    /// 崩溃/断电正好赶上写一半，`bedremote.json` 就成了半截 JSON —— 而这个程序读不懂配置时
+    /// 会退回内置默认，也就是**口令清空、端口回 8765**：你以为锁着的门自己开了。
+    /// 现在先写同目录的 .tmp，再用 File.Replace 换上去，顺手把上一份留成 .bak（读坏时自动回退用）。
+    /// 路径是"程序同目录/当前用户的 LocalAppData"，都在同一个卷上，Replace 才是真原子。
+    /// </summary>
+    public static void WriteAtomic(string path, string text) { WriteAtomic(path, text, true); }
+
+    /// <summary>
+    /// keepBak=false 是给"从备份治回来"那一步用的：那份 `.bak` 是**唯一一份还能用的配置**，
+    /// 治主文件的时候顺手把它换成主文件的旧内容（= 半截的那份）等于把救生圈扔了。
+    /// `File.Replace(tmp, path, null)` 就是"换上去、不留备份"。
+    /// </summary>
+    public static void WriteAtomic(string path, string text, bool keepBak)
+    {
+        string tmp = path + ".tmp";
+        File.WriteAllText(tmp, text, new UTF8Encoding(false));
+        try
+        {
+            if (File.Exists(path)) File.Replace(tmp, path, keepBak ? path + ".bak" : null);
+            else File.Move(tmp, path);
+            return;
+        }
+        catch (Exception)
+        {
+            // File.Replace 不是哪都肯干活：FAT/网络盘、目标被杀软或编辑器占着都会抛。
+            // 退化成"先复制一份旧的当 .bak，再覆盖"，至少比原来的裸覆盖强。
+            try { if (keepBak && File.Exists(path)) File.Copy(path, path + ".bak", true); } catch { }
+            try { File.Copy(tmp, path, true); } catch { }
+            try { File.Delete(tmp); } catch { }
+        }
+    }
 
     // 只替换 panels 段，其它字段保持文件里的原样（用户在编辑器里只该看到面板）
     public static bool SavePanels(string panelsJson, out string err)
@@ -477,12 +544,19 @@ static class Config
         err = null;
         try
         {
-            var p = Json.Obj(Json.Parse(panelsJson));
+            object parsed = Json.Parse(string.IsNullOrEmpty(panelsJson) ? "{}" : panelsJson);
+            // 和 SetMacros 同一条教训：以前 `[]`、`null`、半截 body 都会被 Json.Obj 当成"空对象"
+            // 收下并写盘 —— 而这一段是替换语义，于是**一条请求就把用户所有自定义面板擦掉**，
+            // 还回一句 ok。所以形状必须查死：必须是对象，而且必须带 tabs 数组。
+            var p = parsed as Dictionary<string, object>;
+            if (p == null) { err = "面板必须是一个对象（{\"tabs\":[...]}），不是数组或字符串"; return false; }
+            object tabs = Json.Get(p, "tabs");
+            if (tabs == null || !(tabs is List<object>)) { err = "面板里必须有 tabs 数组（清空页签也要留着 tabs:[]）"; return false; }
             string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
             var root = Json.Obj(Json.Parse(text));
             root["panels"] = p;
             Panels = p;
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }
@@ -506,7 +580,7 @@ static class Config
             string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
             var root = Json.Obj(Json.Parse(text));
             if (val == null) root.Remove(key); else root[key] = val;
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }
@@ -542,7 +616,8 @@ static class Config
         err = null;
         try
         {
-            var g = Json.Obj(Json.Parse(layoutJson ?? "{}"));
+            var g = Json.Parse(string.IsNullOrEmpty(layoutJson) ? "{}" : layoutJson) as Dictionary<string, object>;
+            if (g == null) { err = "手柄布局必须是一个对象，不是数组或字符串"; return false; }
             // 收得紧一点：这个键是远程可写的，塞个几百 KB 进去就会把配置文件撑爆。
             // 现在的形状是 profiles:{名字:{widgets:[...]}}，老形状是顶层 widgets:[...]，两种都限。
             int max = 0;
@@ -559,7 +634,7 @@ static class Config
             var root = Json.Obj(Json.Parse(text));
             root["gamepad"] = g;
             Gamepad = g;
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }
@@ -623,7 +698,7 @@ static class Config
                 }
                 root["macros"] = obj;
             }
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             Macros = next;
             return true;
         }
@@ -645,7 +720,7 @@ static class Config
             else if (key == "allowOpen") AllowOpen = val;
             else if (key == "https") Https = val;
             else if (key == "ca") Ca = val;
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }
@@ -663,7 +738,7 @@ static class Config
             run[name] = cmd;
             root["run"] = run;
             Run[name] = cmd;
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }
@@ -710,7 +785,7 @@ static class Config
             panels["tabs"] = tabs;
             root["panels"] = panels;
             Panels = panels;
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }
@@ -726,7 +801,7 @@ static class Config
             var root = Json.Obj(Json.Parse(text));
             if (val < 0) root.Remove(key); else root[key] = val;
             if (key == "autoWakeSec" && val >= 0) AutoWakeSec = val;
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }
@@ -754,7 +829,7 @@ static class Config
                 MusicDirs = new List<string>();
                 for (int i = 0; i < arr.Count; i++) MusicDirs.Add((string)arr[i]);
             }
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             return true;
         }
         catch (Exception ex) { err = ex.Message; return false; }
@@ -771,7 +846,7 @@ static class Config
             string text = System.IO.File.Exists(Path) ? System.IO.File.ReadAllText(Path) : DefaultJson;
             var root = Json.Obj(Json.Parse(text));
             root["djOffset"] = ms;
-            System.IO.File.WriteAllText(Path, Json.WritePretty(root), new UTF8Encoding(false));
+            WriteAtomic(Path, Json.WritePretty(root));
             DjOffset = ms;
             return true;
         }

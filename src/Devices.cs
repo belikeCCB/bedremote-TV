@@ -88,12 +88,33 @@ static class Devs
             r.Added = Tk(); r.Last = r.Added;
             Map[id] = r;
             Dirty = true;
-            Program.Log("[设备] 配对了新设备：「" + r.Name + "」 " + id.Substring(0, Math.Min(8, id.Length)) + "…");
+            // 上限在这儿也要生效。以前只有启动读文件时裁剪，于是运行期"每次换个 id 就挤进来一条"，
+            // 名单能长到无限：界面上根本没法看，文件也一路写盘。满了就丢最久没来的（不丢新来的）。
+            int evicted = 0;
+            while (Map.Count > Max) { DropOldest(); evicted++; }
+            Program.Log("[设备] 配对了新设备：「" + r.Name + "」 " + id.Substring(0, Math.Min(8, id.Length)) + "…"
+                + (evicted > 0 ? "（名单超过 " + Max + " 台，挤掉了 " + evicted + " 台最久没来的）" : ""));
             Save();
         }
     }
 
-    static string Trim(string s) { return s.Length > 40 ? s.Substring(0, 40) : s; }
+    // 设备名是**那台设备自己报上来的字符串**（?dn=），它会进本机日志。
+    // 所以除了截长度，还要把控制字符去掉：不滤的话 "x\n[口令] 已清掉口令" 这种名字
+    // 就能在 bedremote.log 里伪造出一行像模像样的记录 —— 内容伤不了人，
+    // 但日志是"这台电脑最近给谁干过什么"的唯一凭据，被掺假比被泄露更难受。
+    static string Trim(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "未命名设备";
+        var sb = new StringBuilder(s.Length);
+        for (int i = 0; i < s.Length && sb.Length < 40; i++)
+        {
+            char c = s[i];
+            if (c < ' ' || c == '\x7f') continue;
+            sb.Append(c);
+        }
+        string r = sb.ToString().Trim();
+        return r.Length == 0 ? "未命名设备" : r;
+    }
 
     static public bool Ok(string id)
     {
@@ -173,7 +194,7 @@ static class Devs
                 n++;
             }
             sb.Append(']');
-            File.WriteAllText(File_, sb.ToString(), new UTF8Encoding(false));
+            Config.WriteAtomic(File_, sb.ToString());
             Dirty = false;
         }
         catch (Exception ex) { Program.Log("[设备] 名单写失败：" + ex.Message); }

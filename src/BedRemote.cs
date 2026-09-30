@@ -508,6 +508,7 @@ sealed class Sse
     public readonly Guid Id;
     public volatile bool Dead;
     public string Dev = "";                   // 这条连接属于哪台设备（踢人的时候按它找，见 Devs）
+    public TcpClient Cli;                     // 底下那条连接（要"先挥手再挂"地关掉它，见 CloseQuietly）
     public Sse(Stream s) { Stream = s; Id = Guid.NewGuid(); }
 }
 
@@ -521,7 +522,7 @@ static class Program
     static string DataDir = "";
     static long Started = 0;
     static volatile bool Awake = true;
-    internal const string Version = "bedremote 0.14.0";
+    internal const string Version = "bedremote 0.14.1";
 
     static void Help()
     {
@@ -692,7 +693,7 @@ static class Program
                 Log("  HTTPS：" + Tls.Status + "。第一次访问手机会警告\"不受信任\"，安卓 Chrome 点 高级 → 继续访问就行；" +
                     "陀螺仪、读剪贴板、屏幕常亮这几样必须有它才拿得到。");
             else if (Config.Https) Log("  HTTPS 没起来：" + Tls.Status + "（现在只有 http://，陀螺仪/剪贴板用不了）");
-            if (Config.Error != null) Log("  [警告] bedremote.json 解析失败，已退回内置默认面板：" + Config.Error);
+            if (Config.Error != null) Log("  [警告] 配置文件有问题：" + Config.Error);
         }
         else
         {
@@ -718,7 +719,7 @@ static class Program
         Log("  问一句并等手机回答:  curl \"http://127.0.0.1:" + Port + "/ask?text=要现在下载吗\"");
         Log("  手机不想输地址:  双击 pair.cmd（或本机开 " + "http://127.0.0.1:" + Port + "/pair）出二维码，手机扫一下就直连");
         if (Config.Error != null)
-            Log("  [警告] bedremote.json 解析失败，已退回内置默认面板：" + Config.Error);
+            Log("  [警告] 配置文件有问题：" + Config.Error);
         else
             Log("  配置已加载：" + Config.Path + "（run 白名单 " + Config.Run.Count + " 条）");
         Log("  停止: 直接关这个窗口");
@@ -791,7 +792,7 @@ static class Program
             Awake = Config.KeepAwake;
             Broadcast("{\"e\":\"panel\"}");
             string s = "配置已重新加载：run 白名单 " + Config.Run.Count + " 条，通行证点名 " + Config.ElevatedRun.Count + " 条";
-            Log("[reload] " + s + (Config.Error != null ? "（注意：配置文件解析有问题，已退回内置默认：" + Config.Error + "）" : ""));
+            Log("[reload] " + s + (Config.Error != null ? "（注意：配置文件有问题：" + Config.Error + "）" : ""));
             return s;
         }
         catch (Exception ex) { return "重载失败：" + ex.Message; }
@@ -1044,14 +1045,18 @@ static class Program
         lock (Peers) return "{\"e\":\"peers\",\"n\":" + ExternalCount() + ",\"list\":" + PeersListJson() + "}";
     }
 
-    static string AddrJson()
+    static string AddrJson() { return AddrJson(true); }
+
+    // showToken=false 时响应里 "token" 是空串并带 "tokenHidden":true。
+    static string AddrJson(bool showToken)
     {
         int online = 0;
         lock (ClientsLock) { online = Clients.Count; }
         var sb = new StringBuilder();
         sb.Append("{\"port\":").Append(Port)
           .Append(",\"name\":\"").Append(Json(Config.NameOrMachine())).Append("\"")
-          .Append(",\"token\":\"").Append(Json(Token ?? "")).Append("\"")
+          .Append(",\"token\":\"").Append(showToken ? Json(Token ?? "") : "").Append("\"")
+          .Append(showToken ? "" : ",\"tokenHidden\":true")
           .Append(",\"online\":").Append(online)
           .Append(",\"devs\":").Append(ExternalCount())
           .Append(",\"autoSec\":").Append(Config.AutoWakeSec)
@@ -1242,13 +1247,70 @@ static class Program
         catch (Exception ex) { return "fail:" + ex.Message; }
     }
 
-    static string RandomToken()
+    // "协议://主机:端口/路径" 或 "主机:端口" -> "主机:端口"（小写、砍掉路径和查询）。
+    // 比 Origin/Referer/Host 三者是不是同一个站，只用这一种形态比，省得每处各切一遍。
+    static string AuthorityOf(string url)
     {
-        const string abc = "abcdefghjkmnpqrstuvwxyz23456789";
-        var rnd = new Random();
-        var sb = new StringBuilder();
-        for (int i = 0; i < 4; i++) sb.Append(abc[rnd.Next(abc.Length)]);
-        return sb.ToString();
+        if (string.IsNullOrEmpty(url)) return "";
+        string s = url.Trim();
+        int p = s.IndexOf("://");
+        if (p >= 0) s = s.Substring(p + 3);
+        int cut = s.IndexOf('/');
+        if (cut < 0) cut = s.IndexOf('?');
+        if (cut >= 0) s = s.Substring(0, cut);
+        return s.Trim().ToLowerInvariant();
+    }
+
+    // Referer 是个完整 URL，取前缀用（浏览器没给 Origin 时，这是唯一的来源证据）。
+    static string RefererToOrigin(string referer)
+    {
+        if (string.IsNullOrEmpty(referer)) return "";
+        if (referer.IndexOf("://") < 0) return "";
+        int e = referer.IndexOf('/', referer.IndexOf("://") + 3);
+        return e < 0 ? referer : referer.Substring(0, e);
+    }
+
+    // 跨站请求挡一道。为什么非做不可：这服务原来完全不看"请求是谁发起的"，
+    // 于是手机或电脑上**任何一个网页**（包括随手点开的广告页）都能用
+    //   <img src="http://192.168.x.x:8765/cmd?c=key&...">
+    // 驱动这台电脑；旧版响应里还写着 Access-Control-Allow-Origin: *，
+    // 那个网页还能顺手把 /addr 里的明文口令读走。
+    // 判定刻意保守 —— 只在"有证据是别的网站"时才拒，别把 curl/本机脚本/正常点开页面挡掉：
+    //   1) Origin 的主机:端口 != Host 头 → 拒。fetch/XHR/跨源表单 POST 一定带 Origin，
+    //      而"点一个链接进来"不带 Origin，所以这条不会误伤人正常打开页面。
+    //      file:// 和沙盒 iframe 会给 "null"，那也不是我们的页面，同样拒。
+    //   2) Sec-Fetch-Site: cross-site → 拒，**除非**是 GET 且落在 SafeLandingPath 那张表里
+    //      （Chrome/Edge/Firefox/Safari 现在都带这个头，连 <img>、隐藏 iframe 这类老式跨站驱动也带）。
+    //   3) 只有 Referer 不匹配（既没 Origin 也没 Sec-Fetch-Site 的老浏览器）→ 顶层跳转放行，其余拒。
+    //   4) 三个头都没有 → 放行。curl、PowerShell、本机那个喊话用的 /notify 都走这条。
+    // 注意：**这里不豁免 127.0.0.1**。本机浏览器里的坏网页就是从这台机器自己发过来的，
+    // 一豁免等于洞还在；本机脚本不发 Origin，本来也不需要豁免。
+    // 只有"人自己点进来"才值得给跨站跳转留活路的那几个路径：它们不改任何状态、
+    // 里面也没有口令，放进来以后能不能干活还是由 Authed 说了算。
+    // 反过来，/cmd、/panel/save、/events 这些**不在表里的**一律严格处理 ——
+    // 因为"隐藏 iframe 指向 /cmd?c=key"和"在聊天里点开遥控页"留下的浏览器证据是同一种
+    // （Sec-Fetch-Mode 都是 navigate、都不带 Origin），只能靠路径把它们分开。
+    static bool SafeLandingPath(string p)
+    {
+        if (string.IsNullOrEmpty(p)) return false;
+        if (p == "/" || p == "/index.html" || p == "/phone.html" || p == "/pair" ||
+            p == "/dj" || p == "/edit" || p == "/sw.js" || p == "/manifest.webmanifest" ||
+            p == "/ca.crt" || p == "/ca.pem" || p == "/favicon.ico") return true;
+        return p.StartsWith("/vendor/") || p.StartsWith("/icon-");
+    }
+
+    internal static bool CrossSiteBlocked(Req r)
+    {
+        bool landing = string.Equals(r.Method ?? "GET", "GET", StringComparison.OrdinalIgnoreCase)
+                       && SafeLandingPath(r.Path);
+        string host = AuthorityOf(r.Host);
+        if (host.Length == 0) return false;        // 连 Host 都没有的老式客户端：不猜
+        string o = AuthorityOf(r.Origin);
+        if (o.Length > 0 && o != host) return true;
+        if (r.SecFetch == "cross-site" && !landing) return true;
+        if (landing || string.IsNullOrEmpty(r.Referer)) return false;
+        if (r.FetchMode == "navigate") return false;
+        return AuthorityOf(RefererToOrigin(r.Referer)) != host;
     }
 
     internal static List<string> LocalIPv4()
@@ -1272,6 +1334,11 @@ static class Program
         public Dictionary<string, string> Form = new Dictionary<string, string>();
         public string Remote;
         public string Range;      // 只有音频/视频那条路用得到（拖进度条、跳秒都要 206）
+        public string Host;       // 请求里的 Host 头（同源比对用）
+        public string Origin;     // Origin 头："协议://主机:端口"，浏览器跨源/写操作一定带
+        public string Referer;    // 没有 Origin 时的兜底证据（顶层跳转也会带来源页）
+        public string SecFetch;   // Sec-Fetch-Site：cross-site 就是"别的网站发的"
+        public string FetchMode;  // Sec-Fetch-Mode：navigate = 人在地址栏/链接里点进来
     }
 
     static void Handle(TcpClient c, System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
@@ -1282,11 +1349,16 @@ static class Program
             // 同一个端口：peek 一个字节决定这条是 https 还是 http。握手失败就默默关掉，
             // 不上报 —— 端口扫描器和探测请求也走这条路，报了对人没用。
             var s = Tls.Upgrade(c, cert);
-            if (s == null) { try { c.Close(); } catch { } return; }
+            if (s == null) { try { CloseQuietly(c); } catch { } return; }
             var br = new BufferedStream(s, 8192);
+            // 收头要有超时：以前没有任何 ReceiveTimeout，客户端连上什么都不发、或者声明一个大
+            // Content-Length 然后不写 body，这条线程就永久挂着（几十个就能把服务拖进不停扩线程）。
+            // 15 秒对手机/浏览器足够宽（正常请求是毫秒级），只对"读"生效，SSE 那边会再关掉。
+            try { c.Client.ReceiveTimeout = 15000; } catch { }
 
             string line = ReadLine(br);
-            if (line == null) { c.Close(); return; }
+            if (line == null) { CloseQuietly(c); return; }
+            if (line.Length > 16384) { CloseQuietly(c); return; }      // 请求行上限：防"一行吃光内存"
             var parts = line.Split(' ');
             var r = new Req();
             r.Method = parts[0];
@@ -1297,21 +1369,42 @@ static class Program
             try { r.Remote = ((IPEndPoint)c.Client.RemoteEndPoint).Address.ToString(); } catch { }
 
             int len = 0;
+            bool chunked = false;
+            int headBytes = 0;
             while (true)
             {
                 string h = ReadLine(br);
                 if (string.IsNullOrEmpty(h)) break;
+                headBytes += h.Length;
+                if (h.Length > 8192 || headBytes > 65536) { CloseQuietly(c); return; }   // 单个头 / 头部总量
                 int colon = h.IndexOf(':');
-                if (colon > 0 && h.Substring(0, colon).Trim().ToLowerInvariant() == "content-length")
-                    int.TryParse(h.Substring(colon + 1).Trim(), out len);
+                if (colon <= 0) continue;
+                string hn = h.Substring(0, colon).Trim().ToLowerInvariant();
+                string hv = h.Substring(colon + 1).Trim();
+                if (hn == "content-length") int.TryParse(hv, out len);
                 // 播放器的 Range 头必须留：不支持 206 的话，手机上进度条拖不动、
                 // 电脑端被命令"跳到 12.382 秒"也跳不过去（浏览器会重新要整个文件）
-                if (colon > 0 && h.Substring(0, colon).Trim().ToLowerInvariant() == "range")
-                    r.Range = h.Substring(colon + 1).Trim();
+                else if (hn == "range") r.Range = hv;
+                else if (hn == "host") r.Host = hv;
+                else if (hn == "origin") r.Origin = hv;
+                else if (hn == "referer") r.Referer = hv;
+                else if (hn == "sec-fetch-site") r.SecFetch = hv.ToLowerInvariant();
+                else if (hn == "sec-fetch-mode") r.FetchMode = hv.ToLowerInvariant();
+                else if (hn == "transfer-encoding" && hv.IndexOf("chunked", StringComparison.OrdinalIgnoreCase) >= 0)
+                    chunked = true;
+            }
+            // 分块编码我们**不解析**。以前不解析还照样往下走，于是 body 是空的，
+            // 而三个保存接口都把空 body 当成"存一个空的" —— 一条请求就把面板/宏清空，还回 ok。
+            // 现在明确拒绝，让"没读到 body"变成看得见的错误，而不是静默擦数据。
+            if (chunked)
+            {
+                Write(s, 411, "text/plain; charset=utf-8",
+                    Encoding.UTF8.GetBytes("411 不支持分块(Transfer-Encoding: chunked)：请把 body 直接发过来（会带 Content-Length）\n"), r);
+                CloseQuietly(c); return;
             }
             if (len > 0)
             {
-                if (len > 4 * 1024 * 1024) { c.Close(); return; }   // 防呆：面板文件不该超过 4MB
+                if (len > 4 * 1024 * 1024) { CloseQuietly(c); return; }   // 防呆：面板文件不该超过 4MB
                 byte[] body = new byte[len];
                 int got = 0;
                 while (got < len) { int n = br.Read(body, got, len - got); if (n <= 0) break; got += n; }
@@ -1319,8 +1412,15 @@ static class Program
                 ParseForm(r.Body, r.Form);
             }
             ParseQuery(r.Query, r.Form);
+            // 跨站请求挡一道（详见 CrossSiteBlocked 的注释）。放在解析完之后、任何路由之前。
+            if (CrossSiteBlocked(r))
+            {
+                Write(s, 403, "text/plain; charset=utf-8",
+                    Encoding.UTF8.GetBytes("403 跨站请求被拒：这个服务只给自己的页面用（不带 Origin/Referer 的脚本和 curl 不受影响）\n"), r);
+                CloseQuietly(c); return;
+            }
 
-            if (r.Path == "/favicon.ico") { Write(s, 204, "text/plain", new byte[0], r); c.Close(); return; }
+            if (r.Path == "/favicon.ico") { Write(s, 204, "text/plain", new byte[0], r); CloseQuietly(c); return; }
 
             if (r.Path == "/notify")
             {
@@ -1334,7 +1434,7 @@ static class Program
                     Write(s, 200, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("ok"), r);
                 }
                 else Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403\n"), r);
-                c.Close(); return;
+                CloseQuietly(c); return;
             }
 
             if (r.Path == "/ask")
@@ -1342,11 +1442,11 @@ static class Program
                 string txt; r.Form.TryGetValue("text", out txt); if (txt == null) txt = "";
                 string tk; r.Form.TryGetValue("t", out tk);
                 bool local2 = r.Remote == "127.0.0.1" || r.Remote == "::1" || r.Remote == "";
-                if (!(local2 || tk == Token)) { Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403\n"), r); c.Close(); return; }
+                if (!(local2 || tk == Token)) { Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403\n"), r); CloseQuietly(c); return; }
                 int to; if (!int.TryParse(G(r, "timeout", "120"), out to) || to < 1) to = 120;
                 if (to > 3600) to = 3600;
                 Write(s, 200, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes(WaitReply(txt, to)), r);
-                c.Close(); return;
+                CloseQuietly(c); return;
             }
 
             // 静态资源：只允许 www\vendor\ 下面的 js/css，挡掉 .. 防目录穿越。
@@ -1354,7 +1454,7 @@ static class Program
             {
                 string rel = r.Path.Substring(1);
                 if (rel.Contains(".."))
-                { Write(s, 400, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("400\n"), r); c.Close(); return; }
+                { Write(s, 400, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("400\n"), r); CloseQuietly(c); return; }
                 string fp = Path.Combine(WwwDir, rel.Replace('/', '\\'));
                 if (File.Exists(fp))
                 {
@@ -1363,7 +1463,7 @@ static class Program
                     Write(s, 200, ct, File.ReadAllBytes(fp), r);
                 }
                 else Write(s, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("404 " + rel + "\n"), r);
-                c.Close(); return;
+                CloseQuietly(c); return;
             }
 
             // PWA / 安卓分享面板 / 根证书下载。
@@ -1372,10 +1472,10 @@ static class Program
             if (r.Path == "/sw.js" || r.Path == "/icon-192.png" || r.Path == "/icon-512.png")
             {
                 string fp = Path.Combine(WwwDir, r.Path.Substring(1).Replace('/', Path.DirectorySeparatorChar));
-                if (!File.Exists(fp)) { Write(s, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("404\n"), r); c.Close(); return; }
+                if (!File.Exists(fp)) { Write(s, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("404\n"), r); CloseQuietly(c); return; }
                 string ct = r.Path.EndsWith(".js") ? "application/javascript; charset=utf-8" : "image/png";
                 Write(s, 200, ct, File.ReadAllBytes(fp), r);
-                c.Close(); return;
+                CloseQuietly(c); return;
             }
             if (r.Path == "/ca.crt" || r.Path == "/ca.pem")
             {
@@ -1384,28 +1484,38 @@ static class Program
                 {
                     Write(s, 404, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes(
                         "现在是自签模式，没有根证书。想装成 App / 用安卓分享面板，就把 bedremote.json 里的 \"ca\" 改成 true 再重启。\n"), r);
-                    c.Close(); return;
+                    CloseQuietly(c); return;
                 }
                 Write(s, 200, "application/x-x509-ca-cert", pem, r);
-                c.Close(); return;
+                CloseQuietly(c); return;
             }
             if (r.Path == "/manifest.webmanifest")
             {
-                bool okM = Authed(r) || r.Remote == "127.0.0.1" || r.Remote == "::1" || r.Remote == "";
-                if (!okM) { Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403 需要令牌\n"), r); c.Close(); return; }
-                Write(s, 200, "application/manifest+json; charset=utf-8", Encoding.UTF8.GetBytes(ManifestJson()), r);
-                c.Close(); return;
+                bool okM = Authed(r) && HoldsToken(r);
+                if (!okM)
+                {
+                    Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes(
+                        "403 装成 App 要当面带口令：这个清单里会写入口令，只认 ?t=（手机页本来就带着）\n"), r);
+                    CloseQuietly(c); return;
+                }
+                Write(s, 200, "application/manifest+json; charset=utf-8", Encoding.UTF8.GetBytes(ManifestJson(true)), r);
+                CloseQuietly(c); return;
             }
             if (r.Path == "/share")
             {
                 bool okS = Authed(r) || r.Remote == "127.0.0.1" || r.Remote == "::1" || r.Remote == "";
-                if (!okS) { Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403 需要令牌\n"), r); c.Close(); return; }
+                if (!okS) { Write(s, 403, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("403 需要令牌\n"), r); CloseQuietly(c); return; }
                 string u = PickSharedUrl(G(r, "url", ""), G(r, "text", ""), G(r, "title", ""));
                 string what = u.Length == 0 ? "分享过来的三段文本里没找到 http 链接" : OpenUrl(u, r.Remote);
                 Log("[share] " + what + "  <- " + r.Remote);
+                // 跳转地址里带不带口令，取决于**来的人自己有没有带**：
+                //   装着 App 那条路（分享面板 → /share?t=...，口令是装 App 时嵌进清单里的）必须继续
+                //   把 t 还给页面，否则落地的那一眼就没凭据了，功能是坏的；
+                //   只凭设备号 d 进来的老设备不给 —— 不然"踢掉这一台"没意义，它顺手就把钥匙抄走了。
+                // 旧版是无条件回显 t，等于"任何摸到 /share 的人都有一份口令"。
                 Redirect(s, "/?shared=" + Uri.EscapeDataString(what.Length > 70 ? what.Substring(0, 70) : what)
-                                  + (Token.Length > 0 ? "&t=" + Uri.EscapeDataString(Token) : ""));
-                c.Close(); return;
+                                  + (HoldsToken(r) && Token.Length > 0 ? "&t=" + Uri.EscapeDataString(Token) : ""));
+                CloseQuietly(c); return;
             }
 
             // 配对二维码页 + 地址接口。没设令牌时局域网里谁都能看（这样电视浏览器
@@ -1418,17 +1528,19 @@ static class Program
                 {
                     Write(s, 403, "text/plain; charset=utf-8",
                         Encoding.UTF8.GetBytes("403 设了令牌：配对页只给本机浏览器看（或在地址后面带上 ?t=令牌）。在电脑上打开 http://127.0.0.1:" + Port + "/pair\n"), r);
-                    c.Close(); return;
+                    CloseQuietly(c); return;
                 }
                 if (r.Path == "/addr")
                 {
-                    Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(AddrJson()), r);
-                    c.Close(); return;
+                    // 口令只给"当面带着口令来问"的人看。只凭设备号 d 的老设备能拿到端口/IP/在线数
+                    // （手机页那张"机器列表"卡要用），但抄不走口令 —— 这样"踢掉这一台"才是真的踢掉了。
+                    Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(AddrJson(HoldsToken(r))), r);
+                    CloseQuietly(c); return;
                 }
                 string pf = Path.Combine(WwwDir, "pair.html");
                 if (File.Exists(pf)) Write(s, 200, "text/html; charset=utf-8", File.ReadAllBytes(pf), r);
                 else Write(s, 500, "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("找不到 www\\pair.html"), r);
-                c.Close(); return;
+                CloseQuietly(c); return;
             }
 
             if (!Authed(r))
@@ -1439,14 +1551,22 @@ static class Program
                 if (r.Path == "/" || r.Path == "/index.html" || r.Path == "/dj")
                 {
                     Write(s, 403, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(ForbiddenHtml(r.Path)), r);
-                    c.Close(); return;
+                    CloseQuietly(c); return;
                 }
                 byte[] b = Encoding.UTF8.GetBytes("403 bad token\n");
                 Write(s, 403, "text/plain; charset=utf-8", b, r);
-                c.Close(); return;
+                CloseQuietly(c); return;
             }
 
-            if (r.Path == "/events") { ServeSse(s, r); c.Close(); return; }
+            if (r.Path == "/events")
+            {
+                // 长连接要有"写不出去"的截止时间：手机睡着/切后台时 TCP 窗口会堵满，
+                // 没超时的话那条线程和每次广播都会一直等（Broadcast 已经改成锁外发了，
+                // 但一条 3 秒的写超时能把"最差情况"从'无限'变成'看得见'）。
+                // 只给 /events 设，不给 /media 设 —— 那一条是在给手机整首歌地写，慢也得让它写完。
+                try { c.Client.SendTimeout = 3000; } catch { }
+                ServeSse(s, r, c); CloseQuietly(c); return;
+            }
 
             switch (r.Path)
             {
@@ -1465,7 +1585,14 @@ static class Program
                 case "/panel/save":
                     {
                         string err;
-                        if (Config.SavePanels(r.Body ?? "{}", out err))
+                        string payload = SavePayload(r);
+                        if (payload == null)
+                        {
+                            Write(s, 400, "application/json; charset=utf-8",
+                                Encoding.UTF8.GetBytes("{\"ok\":false,\"err\":\"" + Json(EmptySave) + "\"}"), r);
+                            break;
+                        }
+                        if (Config.SavePanels(payload, out err))
                         {
                             Broadcast("{\"e\":\"panel\"}");
                             Log("[panel] 已保存");
@@ -1482,7 +1609,14 @@ static class Program
                 case "/macros/save":
                     {
                         string err;
-                        if (Config.SetMacros(G(r, "j", r.Body ?? "{}"), out err))
+                        string payload = SavePayload(r);
+                        if (payload == null)
+                        {
+                            Write(s, 400, "application/json; charset=utf-8",
+                                Encoding.UTF8.GetBytes("{\"ok\":false,\"err\":\"" + Json(EmptySave) + "\"}"), r);
+                            break;
+                        }
+                        if (Config.SetMacros(payload, out err))
                         {
                             Log("[宏] 组合动作已保存：" + (r.Remote ?? "?"));
                             Broadcast("{\"e\":\"macro\"}");
@@ -1499,7 +1633,14 @@ static class Program
                     {
                         // 手机用表单发（j=...），curl 直接甩一段 JSON 当 body 也认
                         string err;
-                        if (Config.SaveGamepad(G(r, "j", r.Body ?? "{}"), out err))
+                        string payload = SavePayload(r);
+                        if (payload == null)
+                        {
+                            Write(s, 400, "application/json; charset=utf-8",
+                                Encoding.UTF8.GetBytes("{\"ok\":false,\"err\":\"" + Json(EmptySave) + "\"}"), r);
+                            break;
+                        }
+                        if (Config.SaveGamepad(payload, out err))
                         {
                             Log("[手柄] 布局已保存：" + (r.Remote ?? "?"));
                             Write(s, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes("{\"ok\":true}"), r);
@@ -1530,7 +1671,7 @@ static class Program
                             break;
                         }
                         Media.Serve(s, c, r, full);
-                        c.Close(); return;
+                        CloseQuietly(c); return;
                     }
                 case "/edit":
                     {
@@ -1579,9 +1720,9 @@ static class Program
                 case "/cmd": Dispatch(s, r); break;
                 default: Write(s, 404, "text/plain", Encoding.UTF8.GetBytes("not found"), r); break;
             }
-            c.Close();
+            CloseQuietly(c);
         }
-        catch { try { c.Close(); } catch { } }
+        catch { try { CloseQuietly(c); } catch { } }
     }
 
     // 谁能进来。两条路，顺序不能反：
@@ -1590,6 +1731,24 @@ static class Program
     //   2) 口令 t —— 第一次进来（或刚改过口令）走这条；带对了就顺手配对。
     // 口令为空时第 2 条恒成立（家里局域网，少一次输入），这时配对没意义也就不配：
     // 谁都能进的状态下，"名单"管不住任何人。
+    // 三个保存接口共用的"要存的 JSON 到底在哪儿"。返回 null = 什么都没收到。
+    // 为什么要有这个：以前的写法是 `r.Body ?? "{}"`，于是"一条没带内容的 POST"
+    // 被翻译成"存一份空的"，面板/手柄布局/组合动作整段被清空，还回 ok:true。
+    // （独立评审实测：分块编码的请求 body 也是空的，因为这边根本不解析 chunked，
+    //  现在那条在更前面就变成 411 了；这里补的是"空 body"这条路。）
+    // 两条发法都认：手机/表单发 j=...，编辑器和 curl 直接甩一段 JSON 当 body。
+    static string SavePayload(Req r)
+    {
+        string j;
+        if (r.Form.TryGetValue("j", out j) && j.Trim().Length > 0) return j;
+        if (r.Body != null && r.Body.Trim().Length > 0) return r.Body;
+        return null;
+    }
+
+    // 空 body 时给的那句话。特意强调"原来的没动"：人看到 400 第一反应是
+    // "那我之前存的是不是没了"，这里必须当场回答。
+    const string EmptySave = "没收到任何内容（body 是空的），原来的配置没动；确实想清空就发一个空的对象/数组回来，别发空 body";
+
     static bool Authed(Req r)
     {
         string d;
@@ -1605,6 +1764,23 @@ static class Program
         return true;
     }
 
+    // 这条请求是不是**当面带着口令**（或者就是这台电脑自己在问）。
+    // 为什么要单独问一遍：/addr、/manifest.webmanifest 这两个口会把明文口令写进响应里。
+    // 只带 d 的老设备照样能动你的鼠标键盘（Authed 认它），但不该顺手把口令抄走 ——
+    // 否则"踢掉这一台"就没意义了：它早把口令存下来，随时能拿口令再配一台新的。
+    // 本机（127.0.0.1/::1）算"带着"：电脑界面、`/pair` 那张二维码页、还有本机脚本都是这条路，
+    // 而二维码**必须**含口令，否则手机扫完连不上。这不构成新的暴露面 ——
+    // 能从那台机器自己问出口令的人，本来就能读到床边的 `bedremote.json`；
+    // 而本机浏览器里的坏网页跨源问 `/addr`，会被 CrossSiteBlocked 和没有 ACAO 一起挡掉。
+    // 没设口令时 Token 是空的，本来就没有可泄的东西，一律算"带着"。
+    static bool HoldsToken(Req r)
+    {
+        if (Token.Length == 0) return true;
+        string t;
+        if (r.Form.TryGetValue("q_t", out t) && t == Token) return true;
+        return r.Remote == "127.0.0.1" || r.Remote == "::1" || r.Remote == "";
+    }
+
     // 把某台设备现在挂着的长连接掐掉（踢人要用）。返回掐了几条。
     // 先发一条 kick 再关：手机页收到就知道"我不是被网断了，是主人把我移出名单了"，
     // 会停掉自动重连、把话讲明白 —— 不然 EventSource 每 0.8 秒重连一次，
@@ -1612,21 +1788,53 @@ static class Program
     static int CloseDevStreams(string id)
     {
         if (string.IsNullOrEmpty(id)) return 0;
-        int n = 0;
         byte[] b = Encoding.UTF8.GetBytes("data: {\"e\":\"kick\"}\n\n");
+        // 先在锁里把这一台的连接摘下来，再在锁外面发 + 标 Dead（道理同 Broadcast：
+        // 一条堵住的 socket 不能把锁压在下面，那等于"想踢一个人，结果所有人都动不了"）。
+        var hit = new List<Sse>();
         lock (ClientsLock)
         {
             for (int i = Clients.Count - 1; i >= 0; i--)
             {
                 if (Clients[i].Dev != id) continue;
-                try { Clients[i].Stream.Write(b, 0, b.Length); Clients[i].Stream.Flush(); } catch { }
-                try { Clients[i].Stream.Close(); } catch { }
                 Clients[i].Dead = true;
+                hit.Add(Clients[i]);
                 Clients.RemoveAt(i);
-                n++;
             }
         }
-        return n;
+        for (int i = 0; i < hit.Count; i++)
+        {
+            try { hit[i].Stream.Write(b, 0, b.Length); hit[i].Stream.Flush(); } catch { }
+            // 先发 kick 再挥手：手机收到就知道"我不是网断了，是主人把我移出名单了"。
+            // 用 CloseQuietly 而不是 Stream.Close() —— 后者在这种"对方还有字节没读走"的场合会发 RST，
+            // 把刚写进去的 kick 一起吞了，手机上就只剩"数字不跳"。
+            CloseQuietly(hit[i].Cli);
+        }
+        return hit.Count;
+    }
+
+    // 把**所有**长连接标记为该退场（改口令后用）。
+    // 为什么必须做：/events 那条只在建立连接时鉴权一次，之后那个循环再也不看凭据。
+    // 所以旧版的行为是 —— 口令改了、名单清了，但已经连上的页面还能继续收这台电脑的广播
+    // （当前窗口标题、状态、宏进度），直到它自己掉线为止。"换锁"换的就是这个。
+    // 这里只标 Dead、不强关 socket：事件是刚写进缓冲区的，硬关会连它一起吞掉；
+    // 那条线程最多 4 秒后自己发现 Dead、退出循环、由调用方正常关闭连接。
+    static int CloseAllStreams()
+    {
+        var hit = new List<Sse>();
+        lock (ClientsLock)
+        {
+            for (int i = Clients.Count - 1; i >= 0; i--)
+            {
+                if (Clients[i].Dead) continue;
+                Clients[i].Dead = true;
+                hit.Add(Clients[i]);
+                Clients.RemoveAt(i);
+            }
+        }
+        // 和踢人一样：名单先在锁里抄走，挥手在锁外面做（一条堵住的 socket 不许把锁压在下面）。
+        for (int i = 0; i < hit.Count; i++) CloseQuietly(hit[i].Cli);
+        return hit.Count;
     }
 
     // ---------- 口令 / 设备名单：界面和手机页都走这几个口子，别各自抄一份 ----------
@@ -1662,6 +1870,9 @@ static class Program
         // 还开着的页面：口令变了，它们下次发指令就会 403。先把地址推过去，
         // 界面/手机页上的二维码立刻是新的，省得人还举着旧码扫。
         Broadcast("{\"e\":\"tok\"}");
+        // 推完就把这些长连接全部收掉。不收的话它们还能一直看广播（详见 CloseAllStreams）。
+        int streams = CloseAllStreams();
+        if (streams > 0) Log("[口令] 断掉了 " + streams + " 条旧长连接（它们会自动重连，凭旧的进不来）");
         return null;
     }
 
@@ -1710,7 +1921,12 @@ static class Program
             int eq = kv.IndexOf('=');
             string k = eq < 0 ? kv : kv.Substring(0, eq);
             string v = eq < 0 ? "" : kv.Substring(eq + 1);
-            into[Uri.UnescapeDataString(k)] = Uri.UnescapeDataString(v.Replace('+', ' '));
+            k = Uri.UnescapeDataString(k);
+            // q_ 前缀是**查询串专用**的命名空间（鉴权读的正是 q_t / q_d）。
+            // 表单里也能塞 q_d=xxx 的话，"凭据来自地址栏"就变成了"凭据哪儿都能来"，
+            // 以后想按来源收紧（比如只给当面带 t 的人看口令）会被这条意外通道绕过去。
+            if (k.StartsWith("q_")) continue;
+            into[k] = Uri.UnescapeDataString(v.Replace('+', ' '));
         }
     }
 
@@ -1732,11 +1948,46 @@ static class Program
     static readonly System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
     internal static long NowMs() { return Clock.ElapsedMilliseconds; }
 
+    // 关一条连接要"先挥手再挂"。直接 Close() 的时候，如果对方的字节还堆在我们没读走的接收区里
+    // —— 被我们当场拒掉的请求体正是这种（分块编码的 body、超长的头）—— Windows 会发 RST，
+    // 而 RST 会把**已经写出去、对方还没读走的响应**一起作废：客户端只看见"连接被重置"，
+    // 看不见那个 411/403。回归测试就是这么撞上的（浏览器那边同样会表现为"下载失败"）。
+    // Shutdown(Send) 先把响应冲出去并留下 FIN，接收区里的残留数据由对方自己收着，不追究。
+    static void CloseQuietly(TcpClient c)
+    {
+        if (c == null) return;
+        try { c.Client.Shutdown(SocketShutdown.Send); } catch { }
+        try { c.Close(); } catch { }
+    }
+
+    // 状态行里那句 reason。以前非 200 一律留空（"HTTP/1.1 403"），浏览器都能忍，
+    // 但 HTTP/1.1 的语法是要求有这一段、而严格的客户端/抓包工具会皱眉；
+    // 416 那处更曾是写死的 "Partial"。列不全的用一个中性词，别拼出个语法怪的东西。
+    static string Reason(int code)
+    {
+        switch (code)
+        {
+            case 200: return " OK";
+            case 204: return " No Content";
+            case 206: return " Partial Content";
+            case 302: return " Found";
+            case 400: return " Bad Request";
+            case 401: return " Unauthorized";
+            case 403: return " Forbidden";
+            case 404: return " Not Found";
+            case 411: return " Length Required";
+            case 416: return " Range Not Satisfiable";
+            case 500: return " Internal Server Error";
+            case 503: return " Service Unavailable";
+            default: return " Status";
+        }
+    }
+
     // 只发头不发体（音频那种流式响应、以及 416 这种空响应要用）
     internal static void WriteHead(Stream s, int code, params string[] extra)
     {
         var sb = new StringBuilder();
-        sb.Append("HTTP/1.1 ").Append(code).Append(code == 200 ? " OK" : " Partial").Append("\r\n");
+        sb.Append("HTTP/1.1 ").Append(code).Append(Reason(code)).Append("\r\n");
         sb.Append("Content-Length: 0\r\n");
         sb.Append("Cache-Control: no-store\r\n");
         for (int i = 0; i < extra.Length; i++) sb.Append(extra[i]).Append("\r\n");
@@ -1748,11 +1999,19 @@ static class Program
     static void Write(Stream s, int code, string ctype, byte[] body, Req r)
     {
         var head = new StringBuilder();
-        head.Append("HTTP/1.1 ").Append(code).Append(code == 200 ? " OK" : "").Append("\r\n");
+        head.Append("HTTP/1.1 ").Append(code).Append(Reason(code)).Append("\r\n");
         head.Append("Content-Type: ").Append(ctype).Append("\r\n");
         head.Append("Content-Length: ").Append(body.Length).Append("\r\n");
         head.Append("Cache-Control: no-store\r\n");
-        head.Append("Access-Control-Allow-Origin: *\r\n");
+        // 我们自己的页面从不互相套 iframe，也没有哪种内容需要浏览器去"猜类型"，所以这两条零成本：
+        //   X-Frame-Options —— 关掉"别的网站把遥控页透明嵌一层、骗人点那个大红按钮"这类点击劫持；
+        //   nosniff —— 挡住 text/plain 被当 HTML 执行（发文件内容那条路最容易踩）。
+        // 这里**故意不写** Access-Control-Allow-Origin。以前写的是 *，意思是
+        // "互联网上任何网站都能用 JS 读我这份响应" —— 局域网里就等价于
+        // 手机/电脑上随便一个网页能把你这台电脑的面板、设备表、口令读走。
+        // 我们自己的页面是同源的，不需要它；删掉后跨源读取被浏览器自己拦下。
+        head.Append("X-Frame-Options: deny\r\n");
+        head.Append("X-Content-Type-Options: nosniff\r\n");
         head.Append("Connection: close\r\n\r\n");
         byte[] hb = Encoding.ASCII.GetBytes(head.ToString());
         s.Write(hb, 0, hb.Length);
@@ -1760,18 +2019,19 @@ static class Program
         s.Flush();
     }
 
-    static void ServeSse(Stream s, Req r)
+    static void ServeSse(Stream s, Req r, TcpClient cli)
     {
         byte[] hb = Encoding.ASCII.GetBytes(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n" +
-            "Access-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n");
+            "Connection: keep-alive\r\n\r\n");     // 同上：不给 ACAO，跨源页面连不上这条长连接
         s.Write(hb, 0, hb.Length); s.Flush();
         byte[] op = Encoding.UTF8.GetBytes("retry: 800\n\n");
         s.Write(op, 0, op.Length); s.Flush();
 
-        var cli = new Sse(s);
-        string dv; if (r.Form.TryGetValue("q_d", out dv) && Devs.Shape(dv)) cli.Dev = dv;
-        lock (ClientsLock) Clients.Add(cli);
+        var c = new Sse(s);
+        c.Cli = cli;
+        string dv; if (r.Form.TryGetValue("q_d", out dv) && Devs.Shape(dv)) c.Dev = dv;
+        lock (ClientsLock) Clients.Add(c);
         NoteSse(r.Remote, 1);
         try
         {
@@ -1779,17 +2039,20 @@ static class Program
                 "data: {\"e\":\"ver\",\"t\":\"" + Json(Version) + "\"}\n\n" +
                 "data: {\"e\":\"win\",\"t\":\"" + Json(W32.ForegroundTitle()) + "\"}\n\n");
             s.Write(hi, 0, hi.Length); s.Flush();
-            while (!cli.Dead)
+            while (!c.Dead)
             {
                 byte[] ping = Encoding.UTF8.GetBytes(": ping\n\n");
                 s.Write(ping, 0, ping.Length); s.Flush();
-                Thread.Sleep(4000);
+                // 4 秒一发是心跳，但**不许真的睡 4 秒**：踢人、改口令都只标 Dead，
+                // 靠这个循环自己退出去关连接。一次睡满 4 秒 = 手机上那一下"被踢了"要等 4 秒才到，
+                // 而测试里那 3 秒预算就直接判失败了（真实感受也是"卡了一下"）。
+                for (int k = 0; k < 40 && !c.Dead; k++) Thread.Sleep(100);
             }
         }
         catch { }
         finally
         {
-            lock (ClientsLock) Clients.Remove(cli);
+            lock (ClientsLock) Clients.Remove(c);
             try { NoteSse(r.Remote, -1); } catch { }
         }
     }
@@ -1797,13 +2060,18 @@ static class Program
     internal static void Broadcast(string json)
     {
         byte[] b = Encoding.UTF8.GetBytes("data: " + json + "\n\n");
-        lock (ClientsLock)
+        // 名单在锁里抄一份，**发**这件事在锁外面做。
+        // 原来是在锁里面直接 Write：socket 写没有超时，一台睡着的手机把 TCP 窗口堵满，
+        // 那一次写就一直挂着，锁不释放 —— 之后所有广播、所有踢人、界面里点任何一下，
+        // 全跟着卡死。抄出来发最差也只是"这一条慢"，别的连接照常收到。
+        // 抄完之后对方被踢掉了怎么办？写进一个已关闭的 stream 会抛，catch 里标 Dead，
+        // 它自己那条线程下一轮就退出去（ServeSse 的 finally 负责从名单里摘干净）。
+        Sse[] snapshot;
+        lock (ClientsLock) snapshot = Clients.ToArray();
+        for (int i = 0; i < snapshot.Length; i++)
         {
-            for (int i = Clients.Count - 1; i >= 0; i--)
-            {
-                try { Clients[i].Stream.Write(b, 0, b.Length); Clients[i].Stream.Flush(); }
-                catch { Clients[i].Dead = true; Clients.RemoveAt(i); }
-            }
+            try { snapshot[i].Stream.Write(b, 0, b.Length); snapshot[i].Stream.Flush(); }
+            catch { snapshot[i].Dead = true; }
         }
     }
 
@@ -1920,7 +2188,7 @@ static class Program
             // 光回一个 "denied" 等于让人对着墙猜：把收到的名字、白名单条数、
             // 以及配置文件有没有解析失败一起说出来。
             string d = "denied：白名单里没有[" + name + "]，当前已加载 " + Config.Run.Count + " 条" +
-                       (Config.Error != null ? "；而且配置文件解析失败（已退回内置默认）：" + Config.Error : "");
+                       (Config.Error != null ? "；而且配置文件有问题（见下面这句）：" + Config.Error : "");
             Log("[run] " + d);
             return d;
         }
@@ -2008,9 +2276,13 @@ static class Program
 
     // PWA 清单。代码生成而不是放一个静态文件，是因为要把令牌写进 start_url 和分享动作里 ——
     // 分享面板打开的是个全新的窗口，没人会再手动把 ?t= 带上。
-    static string ManifestJson()
+    static string ManifestJson() { return ManifestJson(true); }
+
+    // showToken=false：清单里不写口令。只有"当面带着口令来取清单"的人才会拿到 true 那份 ——
+    // 装成 App 时 start_url / 分享目标里嵌的是**取清单那一刻**的口令，所以这趟请求必须自己带 t。
+    static string ManifestJson(bool showToken)
     {
-        string tk = Token.Length > 0 ? "?t=" + Uri.EscapeDataString(Token) : "";
+        string tk = (showToken && Token.Length > 0) ? "?t=" + Uri.EscapeDataString(Token) : "";
         var sb = new StringBuilder();
         sb.Append('{');
         sb.Append("\"name\":\"bedremote 床上遥控\",");

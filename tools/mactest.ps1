@@ -177,6 +177,23 @@ try {
   Check 'posting {} is the documented way to clear' ($empty -match '"ok":true') $empty
   Check 'and it really cleared' ((Body ($B + 'c=macros')) -match '^\[\]$')
 
+  # ---- the nesting guard, and the positive control it used to be missing ----
+  # Refusing a step whose VERB is macro/macros/macrostatus/macrostop is right: two macros pointing
+  # at each other is a loop, and the worker comes from the thread pool, so nothing buries it.
+  # The first version looked for the text "c=macro" ANYWHERE in the step, which also refused a
+  # perfectly legal notify whose message merely mentions it - confusing, and untestable without
+  # a case like this one.
+  $mention = Post ('http://127.0.0.1:' + $Port + '/macros/save') ('j=' + [Uri]::EscapeDataString('{"mention":["c=notify&text=see+c=macro+help","wait=10"]}'))
+  Check 'a step that only mentions c=macro is accepted' ($mention -match '"ok":true') $mention
+  Check '...and running it is not refused as nesting' ((Body ($B + 'c=macro&n=mention')) -match '^ok')
+  # Progress only travels over SSE, and "one key before bed" means the phone is face-down by the
+  # time step 3 fails. macrostatus therefore keeps the last step's result for whoever asks later.
+  $null = Read-Sse $st 1200
+  Check 'macrostatus keeps the last step for later' `
+        ((Body ($B + 'c=macrostatus')) -match '"last":"mention') ((Body ($B + 'c=macrostatus')))
+  $null = Post ('http://127.0.0.1:' + $Port + '/macros/save') ('j=' + [Uri]::EscapeDataString('{"selfish":["c=macro&n=selfish"]}'))
+  Check '...but a step that really calls a macro is still refused' ((Body ($B + 'c=macro&n=selfish')) -match 'err:.*c=macro')
+
   # ---- auth: a macro is a command, so it obeys the token like everything else ----
   $null = Post ('http://127.0.0.1:' + $Port + '/macros/save') ('j=' + [Uri]::EscapeDataString('{"probe":["c=mons"],"edited":["c=notify&s=keep"]}' ))
   try { $sock.Close() } catch { }

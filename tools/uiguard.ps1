@@ -242,6 +242,45 @@ function Shot($out) {
   & (Join-Path $root 'shot.ps1') -Name 'bedremote-gui' -OnlyPid $proc.Id -Out $out 2>&1 | Out-Null
 }
 
+# /events over a raw socket, so we can actually see the server hang up. Invoke-WebRequest cannot
+# hold a streaming response, and "did my long connection really get closed" is the whole question.
+function Open-Sse($token) {
+  $c = New-Object System.Net.Sockets.TcpClient
+  $c.Connect('127.0.0.1', $Port)
+  $st = $c.GetStream()
+  $req = "GET /events?t=$token HTTP/1.1`r`nHost: 127.0.0.1:$Port`r`n`r`n"
+  $b = [Text.Encoding]::ASCII.GetBytes($req); $st.Write($b, 0, $b.Length); $st.Flush()
+  return , @($c, $st)
+}
+function Read-Some($stream, $ms) {
+  $buf = New-Object byte[] 8192; $txt = ''; $closed = $false
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ($sw.ElapsedMilliseconds -lt $ms) {
+    if ($stream.DataAvailable) {
+      $n = $stream.Read($buf, 0, $buf.Length)
+      if ($n -le 0) { $closed = $true; break }
+      $txt += [Text.Encoding]::UTF8.GetString($buf, 0, $n); continue
+    }
+    try {
+      if ($stream.Socket.Poll(200000, [System.Net.Sockets.SelectMode]::SelectRead) -and $stream.Available -eq 0) { $closed = $true; break }
+    } catch { break }
+    Start-Sleep -Milliseconds 50
+  }
+  return , @($txt, $closed)
+}
+# One blocking read on the socket: 0 bytes = the peer closed. Anything else is "not yet / still talking".
+# (This is the shape that proved reliable in secauth.ps1 - a ReceiveTimeout on the TcpClient's own
+# Socket. NetworkStream does not give us a usable one across the two calls.)
+function Wait-Eof($cli, $ms) {
+  $buf = New-Object byte[] 4096
+  try { $cli.Client.ReceiveTimeout = $ms } catch { return 'set failed: ' + $_.Exception.Message }
+  try {
+    $n = $cli.Client.Receive($buf, 0, $buf.Length, [System.Net.Sockets.SocketFlags]::None)
+    if ($n -le 0) { return 'yes' }
+    return 'more'
+  } catch { return 'still open' }
+}
+
 $proc = $null
 try {
   # ---------- sandbox ----------
@@ -275,6 +314,14 @@ try {
   if ($edit -ne '') { $hEdit = [IntPtr][int64]$edit }
 
   # ---------- 2. type a new token, press apply, no restart ----------
+  # First park a long connection on the OLD token. /events authenticates once, when the socket is
+  # opened, and never looks at credentials again - so unless ApplyToken also closes it, a page that
+  # is already open keeps receiving this machine's broadcasts (window title, status, macro steps)
+  # after being locked out. That is the whole point of the last two checks below.
+  $sse = Open-Sse $OLD
+  $sseCli = $sse[0]; $sseSt = $sse[1]
+  $hello = Read-Some $sseSt 1500
+  Check 'a long connection is open on the old token' (([string]$hello[0]) -match '"e":"hello"')
   $NEW = 'zz88qq33'
   [Ug]::SetText($hEdit, $NEW)
   $clicked = [Ug]::Click($top, $capApply)
@@ -285,6 +332,12 @@ try {
   Check 'old token is refused'                ((Code ($B + 'c=ping&t=' + $OLD)) -eq 403)
   Check 'and it was written to bedremote.json' ((Get-Content (Join-Path $Box 'bedremote.json') -Raw) -match $NEW)
   Check 'a page without any token is refused'  ((Code ('http://127.0.0.1:' + $Port + '/')) -eq 403)
+  # The server marks the stream dead and the owning thread closes it on its next loop pass (<=4s),
+  # so it is a graceful FIN rather than a reset - the "tok" event in front of it still gets read.
+  $eof = Wait-Eof $sseCli 7000
+  if ($eof -eq 'more') { $eof = Wait-Eof $sseCli 7000 }
+  Check 'changing the token closed the old long connection' ($eof -eq 'yes') ('eof=' + $eof)
+  try { $sseCli.Close() } catch { }
 
   # ---------- 3. a device that pairs over HTTP shows up in the list ----------
   $dev = 'guidev000001'

@@ -69,10 +69,12 @@ function Body($url) {
 }
 
 $proc = $null
-function Start-Inst($token) {
+function Start-Inst($token, $writeCfg = $true) {
   # A token with a comma/spaces would need real quoting; test tokens are bare words on purpose.
-  $j = '{"port":' + $Port + ',"token":"' + $token + '","https":false,"keepAwake":true,"denyWhenLocked":true}'
-  Set-Content -Encoding ASCII -Path (Join-Path $work 'bedremote.json') -Value $j
+  if ($writeCfg) {
+    $j = '{"port":' + $Port + ',"token":"' + $token + '","https":false,"keepAwake":true,"denyWhenLocked":true}'
+    Set-Content -Encoding ASCII -Path (Join-Path $work 'bedremote.json') -Value $j
+  }
   $a = @('--console', ('--data=' + $data))
   $p = Start-Process -FilePath (Join-Path $work 'bedremote.exe') -ArgumentList $a `
         -WorkingDirectory $work -PassThru -WindowStyle Hidden
@@ -84,7 +86,47 @@ function Start-Inst($token) {
 }
 function Stop-Inst($p) { if ($p) { try { Stop-Process -Id $p.Id -Force } catch { }; Start-Sleep -Milliseconds 400 } }
 
+# Some checks need headers a normal HTTP client will not let us fake (Origin, Sec-Fetch-Site,
+# Transfer-Encoding: chunked) or a request that has no body at all. Raw socket, read until the
+# server closes (every response here is Connection: close). Bodies must stay ASCII: the
+# Content-Length we write is a character count.
+function Send-Raw($method, $path, $headers, $body, $noLength = $false, $addr = '127.0.0.1') {
+  $c = New-Object System.Net.Sockets.TcpClient
+  $c.Connect($addr, $Port)
+  $st = $c.GetStream()
+  $req = $method + ' ' + $path + ' HTTP/1.1' + "`r`n" + 'Host: ' + $addr + ':' + $Port + "`r`n"
+  foreach ($h in $headers) { $req += $h + "`r`n" }
+  if ((-not $noLength) -and ($null -ne $body)) { $req += 'Content-Length: ' + $body.Length + "`r`n" }
+  $req += "`r`n"
+  $b = [Text.Encoding]::ASCII.GetBytes($req)
+  $st.Write($b, 0, $b.Length)
+  if ($null -ne $body -and $body.Length -gt 0) {
+    $bb = [Text.Encoding]::ASCII.GetBytes($body); $st.Write($bb, 0, $bb.Length)
+  }
+  $st.Flush()
+  $txt = ''; $buf = New-Object byte[] 16384
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ($sw.ElapsedMilliseconds -lt 6000) {
+    try { $n = $st.Read($buf, 0, $buf.Length) } catch { break }
+    if ($n -le 0) { break }
+    $txt += [Text.Encoding]::UTF8.GetString($buf, 0, $n)
+  }
+  try { $c.Close() } catch { }
+  return $txt
+}
+function RawCode($resp) { if ($resp -match '^HTTP/1\.1 (\d{3})') { return [int]$matches[1] }; return -1 }
+
 $B = 'http://127.0.0.1:' + $Port + '/cmd?'
+# Some checks have to look like they came from ANOTHER machine. The server deliberately still shows
+# the token to 127.0.0.1 - that is how /pair draws a QR code a phone can actually use - so
+# "a paired device must not be able to read the token" can only be tested over a real
+# non-loopback address. Asking our own LAN address from the same box needs no second machine
+# and does not go through the firewall.
+$allIPs = ([System.Net.Dns]::GetHostEntry([System.Net.Dns]::GetHostName())).AddressList
+$LANS = @($allIPs | Where-Object { $_.AddressFamily -eq 'InterNetwork' -and -not [System.Net.IPAddress]::IsLoopback($_) } |
+    ForEach-Object { $_.ToString() })
+if ($LANS.Count -eq 0) { Write-Host 'NO LAN ADDRESS - these checks need one'; exit 2 }
+$L = 'http://' + $LANS[0] + ':' + $Port
 # A fixed token would let a leftover instance from an earlier run answer these requests and
 # every check would pass against the wrong process. Random per run, so only ours can pass.
 $TOK = 'kq' + (Get-Random -Maximum 99999999).ToString('x')
@@ -198,6 +240,135 @@ try {
   Check 'no token: pairing stays off'       ((Code ($B + 'c=ping&d=freshdevice01')) -eq 200)
   Check 'no token: fresh device not paired' ((Body ($B + 'c=devs')) -notmatch 'freshdevice01')
   Check 'devices.json landed in --data'      (Test-Path (Join-Path $data 'devices.json'))
+
+  # ---- cross-site requests (the drive-by hole) ----
+  # Before 0.14.1 any web page open on the phone or the PC could drive this machine:
+  #   <img src="http://192.168.x.x:8765/cmd?c=key&...">  needs no credential when no token is set,
+  # and every response carried Access-Control-Allow-Origin: *, so the same page could also READ
+  # the token back out of /addr with a fetch(). The gate now looks at Origin / Sec-Fetch-Site /
+  # Referer - headers Invoke-WebRequest will not let us forge, hence Send-Raw.
+  # Positive control matters here: curl and local scripts send none of those headers and must keep working.
+  Stop-Inst $proc; $proc = $null
+  $proc = Start-Inst $TOK
+  $P = '/cmd?c=ping&t=' + $TOK
+  Check 'raw GET, no Origin (curl alike) -> 200' ((RawCode (Send-Raw 'GET' $P @() $null)) -eq 200)
+  Check 'Origin = this very host          -> 200' `
+        ((RawCode (Send-Raw 'GET' $P @('Origin: http://127.0.0.1:' + $Port) $null)) -eq 200)
+  Check 'Origin = some other site         -> 403' ((RawCode (Send-Raw 'GET' $P @('Origin: http://evil.example') $null)) -eq 403)
+  Check 'Origin: null (file://, sandbox)  -> 403' ((RawCode (Send-Raw 'GET' $P @('Origin: null') $null)) -eq 403)
+  Check 'Sec-Fetch-Site: cross-site       -> 403' ((RawCode (Send-Raw 'GET' $P @('Sec-Fetch-Site: cross-site') $null)) -eq 403)
+  Check '<img> drive-by (no-cors)         -> 403' `
+        ((RawCode (Send-Raw 'GET' $P @('Sec-Fetch-Site: cross-site', 'Sec-Fetch-Mode: no-cors') $null)) -eq 403)
+  Check 'Referer from another site        -> 403' `
+        ((RawCode (Send-Raw 'GET' $P @('Referer: http://evil.example/x', 'Sec-Fetch-Mode: cors') $null)) -eq 403)
+  # The exception that keeps the product usable: clicking a link to a page that changes nothing
+  # is a cross-site *navigation*, and it must still land (pairing page, icons, editor shell).
+  Check 'link click to a static page      -> 200' `
+        ((RawCode (Send-Raw 'GET' '/sw.js' @('Sec-Fetch-Site: cross-site', 'Sec-Fetch-Mode: navigate',
+                                             'Referer: http://evil.example/x') $null)) -eq 200)
+  Check 'cross-site navigation to /pair   -> 200' `
+        ((RawCode (Send-Raw 'GET' '/pair' @('Sec-Fetch-Site: cross-site', 'Sec-Fetch-Mode: navigate') $null)) -eq 200)
+  # ...but the same evidence on an ACTION endpoint must be refused, iframe included.
+  Check 'iframe navigation into /cmd      -> 403' `
+        ((RawCode (Send-Raw 'GET' $P @('Sec-Fetch-Site: cross-site', 'Sec-Fetch-Mode: navigate') $null)) -eq 403)
+  $adr = Send-Raw 'GET' ('/addr?t=' + $TOK) @() $null
+  Check 'no Access-Control-Allow-Origin anywhere' `
+        ((($adr -notmatch 'Access-Control') -and ((Send-Raw 'GET' '/health' @() $null) -notmatch 'Access-Control')))
+  Check 'frames are refused (X-Frame-Options)'  ($adr -match 'X-Frame-Options: deny')
+
+  # ---- an empty / unreadable save body must never mean "save an empty config" ----
+  # Reproduced on 0.14.0: POST /panel/save with no body returned ok:true and dropped every
+  # custom button (the handler read r.Body ?? "{}"). Chunked was the same hole from the other side.
+  $null = Code ('http://127.0.0.1:' + $Port + '/health?t=' + $TOK)
+  Check 'a real panel save lands' `
+        ((RawCode (Send-Raw 'POST' ('/panel/save?t=' + $TOK) @('Content-Type: application/json') '{"tabs":[]}')) -eq 200)
+  Check 'empty body POST /panel/save    -> 400' `
+        ((RawCode (Send-Raw 'POST' ('/panel/save?t=' + $TOK) @('Content-Type: application/json') '')) -eq 400)
+  Check 'panel survived the empty POST'  ((Body ('http://127.0.0.1:' + $Port + '/panel?t=' + $TOK)) -match 'tabs')
+  Check 'empty body POST /gamepad/save  -> 400' `
+        ((RawCode (Send-Raw 'POST' ('/gamepad/save?t=' + $TOK) @('Content-Type: application/json') '')) -eq 400)
+  Check 'empty body POST /macros/save   -> 400' `
+        ((RawCode (Send-Raw 'POST' ('/macros/save?t=' + $TOK) @('Content-Type: application/json') '')) -eq 400)
+  Check 'chunked POST /macros/save      -> 411' `
+        ((RawCode (Send-Raw 'POST' ('/macros/save?t=' + $TOK) @('Transfer-Encoding: chunked') `
+                              ("2`r`n{}`r`n0`r`n`r`n") $true)) -eq 411)
+  Check 'macros survived the chunked POST' ((Body ('http://127.0.0.1:' + $Port + '/macros?t=' + $TOK)) -match '^\{\}$')
+
+  # ---- the token is not handed to somebody who only shows a device id ----
+  # /addr used to print the plaintext token to anyone Authed let in - including a device that was
+  # paired long ago. Then "kick this device" bought nothing: it had already copied the key and
+  # could re-pair at leisure. Same story for the manifest (start_url carries ?t=) and for the
+  # /share redirect. These have to be requested over the LAN address, not 127.0.0.1: the machine
+  # asking about itself is the pairing page's normal path and is allowed to see the token.
+  Check '/addr over the token shows it'     ((Body ($L + '/addr?t=' + $TOK)) -match $TOK)
+  Check '/addr from the machine itself still shows it (pair page)' `
+        ((Body ('http://127.0.0.1:' + $Port + '/addr')) -match $TOK)
+  $dOnly = Body ($L + '/addr?d=' + $DEVA)
+  Check 'device id alone does NOT buy the token' `
+        ((($dOnly -notmatch ([regex]::Escape($TOK))) -and ($dOnly -match 'tokenHidden'))) ($dOnly)
+  Check 'a paired device still gets its counts' `
+        ((($dOnly -match '"port"') -and ($dOnly -match '"devs"'))) ($dOnly)
+  Check 'manifest over the token -> 200'    ((Code ($L + '/manifest.webmanifest?t=' + $TOK)) -eq 200)
+  Check 'manifest with only a device id -> 403' `
+        ((Code ($L + '/manifest.webmanifest?d=' + $DEVA)) -eq 403)
+  # The /share redirect used to append ?t= for everyone. It still has to for the PWA path
+  # (that request carries the token because the manifest baked it in), and must not for d-only.
+  # url= is deliberately NOT a link: PickSharedUrl finds nothing, so OpenUrl never runs and this
+  # check does not pop a browser on the machine it is testing.
+  $sh1 = Send-Raw 'GET' ('/share?url=hello&t=' + $TOK) @() $null $false $LANS[0]
+  Check 'share echoes the token back to the one who brought it' ($sh1 -match ('t=' + $TOK))
+  $sh2 = Send-Raw 'GET' ('/share?url=hello&d=' + $DEVA) @() $null $false $LANS[0]
+  Check 'share does NOT hand the token to a device-id caller' `
+        ((($sh2 -match '302') -and ($sh2 -notmatch ([regex]::Escape($TOK))))) ($sh2)
+
+  # ---- pairing has a real ceiling ----
+  # It used to be trimmed only at startup, so "present a fresh id" grew the list without limit.
+  for ($i = 0; $i -lt 60; $i++) {
+    $null = Code ($B + 'c=ping&t=' + $TOK + '&d=cap' + $i.ToString('000') + 'device')
+  }
+  $dv = Body ($B + 'c=devs&t=' + $TOK)
+  $cnt = ([regex]::Matches($dv, '"id":"')).Count
+  Check 'pairing is capped at 50'        (($cnt -gt 0) -and ($cnt -le 50)) ('count=' + $cnt)
+  # Re-pair the ones the later checks still want in the list (they may have been the oldest).
+  $null = Code ($B + 'c=ping&t=' + $TOK + '&d=' + $DEVA)
+  $null = Code ($B + 'c=ping&t=' + $TOK + '&d=' + $DEVB)
+
+  # ---- a device name is attacker-chosen text that lands in the local log ----
+  # "?dn=" used to be stored verbatim except for length, so a name like
+  #   "x\n[token cleared]"      could forge a line that looks like the program's own log output.
+  $null = Code ($B + 'c=ping&t=' + $TOK + '&d=capname00001&dn=' + [Uri]::EscapeDataString("ni`nhao"))
+  $dv = Body ($B + 'c=devs&t=' + $TOK)
+  Check 'device name keeps its printable part' ($dv -match 'nihao') ($dv)
+  Check 'no raw newline in the device list'    ($dv -notmatch "`n")
+
+  # ---- a half-written config must NOT silently take the door off ----
+  # This is why every write goes through Config.WriteAtomic now: the old WriteAllText could die
+  # mid-file, and "cannot parse bedremote.json" used to mean "token empty, port 8765" - a gate
+  # that opens itself, looking perfectly healthy on the phone. The reader now falls back to the
+  # .bak that a good save left behind, keeps the broken half as .corrupt, and heals the live file.
+  Stop-Inst $proc; $proc = $null
+  $cfg = Join-Path $work 'bedremote.json'
+  Check 'a good save left bedremote.json.bak'  (Test-Path ($cfg + '.bak'))
+  $txt = [string](Get-Content -Raw -Encoding UTF8 $cfg)
+  Set-Content -Encoding ASCII -Path $cfg -Value $txt.Substring(0, [int]($txt.Length / 2))
+  $proc = Start-Inst $TOK $false
+  Check 'broken config: the token still guards' ((Code ($B + 'c=ping&t=' + $TOK)) -eq 200)
+  Check 'broken config: no credential -> 403'   ((Code ($B + 'c=ping')) -eq 403)
+  Check 'broken config: wrong token -> 403'     ((Code ($B + 'c=ping&t=nope')) -eq 403)
+  Check 'the half-file was kept as .corrupt'    (Test-Path ($cfg + '.corrupt'))
+  Check 'the live config healed itself' `
+        (([string](Get-Content -Raw -Encoding UTF8 $cfg)) -match 'token')
+  # The heal must NOT overwrite the backup with the half-file it just recovered from -
+  # that .bak is the only working config left. (File.Replace with a backup arg does exactly that.)
+  # Asserting "the token is in there" is NOT enough: the broken half-file still starts with
+  # {"port":..,"token":..}, so it matches too. What separates them is that the half-file is
+  # not parseable JSON, so parse it.
+  $bakTxt = [string](Get-Content -Raw -Encoding UTF8 ($cfg + '.bak'))
+  $bakOk = $true
+  try { $null = ($bakTxt | ConvertFrom-Json) } catch { $bakOk = $false }
+  Check 'the backup was not clobbered by the heal' $bakOk ('bak=' + $bakTxt.Length + ' bytes, parses=' + $bakOk)
+  Check 'the page says it came from the backup' `
+        ((Body ('http://127.0.0.1:' + $Port + '/status?t=' + $TOK)) -match 'bak')
 }
 catch {
   $script:fail++
