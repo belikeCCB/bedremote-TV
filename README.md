@@ -1,5 +1,7 @@
 # bedremote
 
+![bedremote](docs/social-preview.png)
+
 躺在床上，用电脑屋里那块**更大的屏**看片、跑 Agent，用手机当鼠标和键盘。
 
 Lying in bed, watching the big screen in the room while the phone acts as mouse + keyboard.
@@ -754,7 +756,11 @@ www\vendor\qrcode.js  二维码生成（第三方，见下）
                    （manifest 由服务端代码生成 —— 要把令牌写进分享动作里；
                      图标 www\icon-192.png / icon-512.png 由 tools\mkicons.cs 生成）
 tools\monprobe.cs  只读侦察：显示器拓扑 + 每块屏的 DDC 能力（开发用）
-tools\mkicons.cs   重新生成 PWA 图标
+tools\mkicons.cs   重新生成全部图像资产：PWA 图标（www\icon-*.png）、**编进 exe 的图标**
+                   （assets\bedremote.ico，16/32/48 走 BMP 条目 + 256 走 PNG 条目）、
+                   GitHub 分享卡片（docs\social-preview.png）。
+                   跑之前注意 csc 要带 `-codepage:65001`：这文件里有中文字面量，
+                   默认代码页会把卡片上那行中文画成豆腐块
 tools\shot.ps1     把界面窗口截成 PNG（PrintWindow，不抢前台）—— 改布局时靠它验收
                    （`-OnlyPid` 只截某个进程自己的窗口，截浏览器时**必须**用它，否则会把别的窗口当"你的页面"截下来）
 tools\uiclick.ps1  在沙箱副本里真的点界面按钮、读日志框文本（回归用）
