@@ -141,6 +141,18 @@ tools\uigudump.ps1   把窗口里每个控件的类名/位置/文本按**码点*
     所以这类测试的正确做法是先做一次"安静检查"（连续两次读坐标一样才开测），
     量不准就明说"这一轮不算"，别拿脏数字下结论（见 `tools\locktest.ps1` 用的那套）。
 
+21. **只会"打印结果"的检查等于没有检查。** `tools\cfgprobe-run.ps1` 最初就是把两个退出码
+    `Write-Host` 出来就完了 —— 示例配置哪天读不懂了，CI 照样全绿，而这个步骤存在的理由就是防这件事。
+    现在它自己断言（正对照必须 0、负对照必须 1 且 `problems=1`），断错就 `exit 1`。
+    写新检查时顺手做一次"反向验一次"：故意把被测物弄坏，确认它会红。
+    第一次 CI 真跑就在这条上被抓到（本地全绿、CI 红在别处），别再犯。
+22. **给 CI 看的证据必须是 ASCII。** 跑在 GitHub runner 上的控制台代码页和本地不一样，
+    中文输出进了 `::error::` 注解就是乱码。所以 `cfgprobe` 在人读的中文输出之后多打一行
+    `CFGPROBE| loaded=1 macros=2 problems=0`，脚本断言和注解都只引用这一行。
+    另外 CI 用的是 `shell: pwsh`（PowerShell 7），本地是 5.1：
+    `Set-Content -Encoding UTF8` 在 5.1 带 BOM、在 7 不带，喂给 `Config.Load` 的字节就不是同一份 ——
+    要写文件就用 `[IO.File]::WriteAllText(..., (New-Object Text.UTF8Encoding($false)))`。
+
 ## 改手机页 JS 怎么测（不用真手机）
 
 `www/phone.html` 是一个 IIFE，全局拿不到，所以 `tools/gpharness.js` 把「手柄」那段代码**按注释标记切出来**

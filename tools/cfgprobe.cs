@@ -89,7 +89,20 @@ static class CfgProbe
                     if (!okStep) err += "  组合动作「" + mkv.Key + "」有一步既不是 c=... 也不是 wait=...：" + s + "\n";
                 }
 
+        int nprob = 0;
+        if (err.Length > 0)
+            foreach (string l in err.Split('\n'))
+                if (l.Trim().Length > 0) nprob++;
+
         System.Console.WriteLine(err.Length == 0 ? "按钮动作都认。" : err.TrimEnd());
+
+        // ASCII marker, deliberately the last line and deliberately without a single Chinese
+        // character: CI reads THIS, not the human output above, because a runner's console
+        // codepage can turn the Chinese into mojibake while asserting on it. Digits survive.
+        System.Console.WriteLine("CFGPROBE| loaded=" + (Config.Loaded ? 1 : 0) +
+                                 " loaderr=" + (Config.Error == null ? 0 : 1) +
+                                 " macros=" + mc + " tabs=" + tabs + " buttons=" + buttons +
+                                 " problems=" + nprob);
         // 配置没读成功却又"看起来正常"（退回默认）是最坑的一种，给它个非零退出码，脚本能接住
         return Config.Loaded && err.Length == 0 ? 0 : 1;
     }
